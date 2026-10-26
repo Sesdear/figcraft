@@ -8,6 +8,11 @@ name = "Español"
 status = "draft — needs native review"
 
 [ui]
+
+"Unsupported file type" = "Tipo de archivo no compatible"
+"Cannot import {name}: unsupported file type." = "No se puede importar {name}: tipo de archivo no compatible."
+"Cannot import {name}: file exceeds 512 MB." = "No se puede importar {name}: el archivo supera los 512 MB."
+
 "Add column" = "Añadir columna"
 "Add measurement" = "Añadir medición"
 "Add row" = "Añadir fila"

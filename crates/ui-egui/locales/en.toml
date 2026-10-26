@@ -1854,3 +1854,7 @@ name = "English"
 "⌘ click" = "⌘ click"
 "⌘ scroll" = "⌘ scroll"
 "⌥ drag" = "⌥ drag"
+
+"Unsupported file type" = "Unsupported file type"
+"Cannot import {name}: unsupported file type." = "Cannot import {name}: unsupported file type."
+"Cannot import {name}: file exceeds 512 MB." = "Cannot import {name}: file exceeds 512 MB."

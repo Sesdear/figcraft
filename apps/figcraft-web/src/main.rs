@@ -21,6 +21,8 @@
 //! bar and the browser history keep it, so the URL is as private as the link itself.
 
 #[cfg(any(target_arch = "wasm32", test))]
+mod file_drag;
+#[cfg(any(target_arch = "wasm32", test))]
 mod query;
 #[cfg(test)]
 mod query_tests;

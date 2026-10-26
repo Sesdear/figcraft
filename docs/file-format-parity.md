@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** minor (`.sketch` import, best effort, Sketch 48 and newer; the PNG row names ignore overlapping layers and where include bounding box is offered; the Fonts table's missing-font row describes the Missing fonts window; `.figcraft` carries the file kind (boards); `.fig` import: resized instances and variable modes by asset key; atomic saves; auto-save; SVG export clip of nested frames; SVG/PDF export depth refusal (#208); `.fig` export: instance sizes, variables with modes, shared styles, variable-width strokes; `.fig` export: written files checked by opening them in other software; experimental `.fig` export; export and inspect behaviour suite and fixes; .fig import: editable vector networks and more layer kinds; embedded image colour profiles; `.fig` import, best effort; animated GIF fills and TIFF images; last major: created, formats from the installed Figma's Info.plist and help center, ours from source; REST import keeps slot layers and instances' slot content (#792); REST import reads grid track sizes (#465); `.fig` import fidelity from the community batches, budgets for large files, the import report, a `.fig` copy from Save as, paste from another design app; instance layers' size and resizing and Hug on import (#731, #732)) · **Target:** Figma Design (desktop app 126.10.7)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-27 · **Change:** minor (canvas-scoped external file drops, native/browser coordinates, bounded image validation; `.sketch` import, best effort, Sketch 48 and newer; the PNG row names ignore overlapping layers and where include bounding box is offered; the Fonts table's missing-font row describes the Missing fonts window; `.figcraft` carries the file kind (boards); `.fig` import: resized instances and variable modes by asset key; atomic saves; auto-save; SVG export clip of nested frames; SVG/PDF export depth refusal (#208); `.fig` export: instance sizes, variables with modes, shared styles, variable-width strokes; `.fig` export: written files checked by opening them in other software; experimental `.fig` export; export and inspect behaviour suite and fixes; .fig import: editable vector networks and more layer kinds; embedded image colour profiles; `.fig` import, best effort; animated GIF fills and TIFF images; last major: created, formats from the installed Figma's Info.plist and help center, ours from source; REST import keeps slot layers and instances' slot content (#792); REST import reads grid track sizes (#465); `.fig` import fidelity from the community batches, budgets for large files, the import report, a `.fig` copy from Save as, paste from another design app; instance layers' size and resizing and Hug on import (#731, #732)) · **Target:** Figma Design (desktop app 126.10.7)
 
 Every format Figma reads or writes, with FigCraft's support. Sources: `Info.plist` of
 `/Applications/Figma.app` (document types only; nothing inside the bundle's code was read), Figma's
@@ -25,6 +25,26 @@ and prototype interactions are still unchecked there.
 | Local library files | team libraries in the cloud | yes (enable a `.figcraft` as a library) | yes (publish) | per-asset versions, updates with overrides kept | see [collaboration-parity](collaboration-parity.md) |
 
 ## Import (place / paste / drop)
+
+External file drops are accepted only over the editor Canvas. Feedback distinguishes supported
+files from unsupported types and clears on exit/cancel/drop. SVG stays editable; raster files
+become ordinary image-filled layers. Placement freezes the receiving view's document coordinates
+at drop time (including Zoom/Pan); files in one gesture are placed side by side and successful
+imports are selected together. Separate gestures keep their own origins. Each file uses the
+existing undoable `file.import`; image bytes are preserved by `.figcraft` save/reopen. Dropped
+native documents still open in their own tabs; Dev Mode remains read-only.
+
+Native disk reads run on background threads and preserve automation-root policy. Encoded files
+and decoded raster buffers are capped at 512 MiB each; header dimensions and actual pixels are
+validated before mutation. Invalid files show existing error toasts without losing valid files
+from the same gesture. Parsing/pixel validation still runs in the existing command on the UI
+thread, behind the loading card. Headless tests cover placement, mixed/repeated drops, discard
+passes, read limits, selection, Undo/Redo and native-format persistence. A native X11 XDND
+smoke run (2026-10-27, synthetic SVG/PNG/JPEG/WebP files) verified hover/cancel, off-Canvas
+rejection, multi-file selection and placement at 50%/200% zoom with pan, Undo/Redo, save/reopen,
+mixed errors, and Drop before the URI reply; feedback and imported layers were inspected in screenshots. Browser
+drag-coordinate state has unit coverage and the WASM build passes. Live browser, Wayland,
+Windows and macOS gestures remain unqualified.
 
 | Format | Figma | FigCraft | Notes | Hours |
 |---|---|---|---|---|
@@ -166,6 +186,7 @@ each.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-27 | minor | Canvas external file imports: scoped feedback/acceptance, Zoom/Pan placement, batch selection, asynchronous bounded disk reads and actual raster validation. Existing import/undo/save mechanisms reused; no parity estimate change. |
 | 2026-10-25 | patch | PNG: the export settings were listed as "contents only" and "include bounding box (the layer's own box)"; the row now names ignore overlapping layers, on by default, and says that the Export section offers include bounding box for text layers (#1307), while `file.export` and `export.update` take it for any layer. Numbers unchanged |
 | 2026-10-24 | patch | Fonts: the missing-font row said "warnings only (REST import)"; it now names the Missing fonts window (#752), `text.missingFonts` and the `missing font` lines of `figcraft-cli info`. Replacing a missing font is still missing. Numbers unchanged |
 | 2026-10-24 | minor | Slices and contents only (Figma's Ignore overlapping layers): with it on, a slice inside a frame or group exports only that frame or group and the layers in it, and its Export preview shows the same; with it off, or for a slice on the page or in a section, the slice exports everything in its area as before |

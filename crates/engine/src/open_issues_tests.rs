@@ -6,22 +6,18 @@ use serde_json::json;
 
 use crate::Session;
 
-/// A 1×1 PNG.
-const PNG: [u8; 67] = [
-    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-    0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x60, 0x00, 0x00, 0x02,
-    0x00, 0x00, 0x01, 0xe2, 0x21, 0xbc, 0x33, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
-];
-
 fn file(name: &str, damage: bool) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("figcraft-open-issues-{}-{name}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let mut d = Document::new("Pics");
-    figcraft_format::add_image(&mut d, PNG.to_vec()).unwrap();
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgba8(1, 1).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let png = png.into_inner();
+    figcraft_format::add_image(&mut d, png.clone()).unwrap();
     let mut bytes = figcraft_format::save_bytes(&d, None).unwrap();
     if damage {
         // Images are stored as they are: change one byte of the PNG, not its checksum.
-        let at = bytes.windows(PNG.len()).position(|w| w == PNG).unwrap();
+        let at = bytes.windows(png.len()).position(|w| w == png).unwrap();
         bytes[at + 30] ^= 0xff;
     }
     let path = dir.join("pics.figcraft");

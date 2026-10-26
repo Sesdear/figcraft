@@ -2,7 +2,7 @@
 resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
 # The plugin SDK and examples build for wasm32 in a workspace of their own (`cargo xtask plugins`).
-exclude = ["plugins"]
+exclude = ["plugins", "vendor/winit"]
 # default-members = ["crates/*", "apps/figcraft", "apps/figcraft-cli", "xtask"]
 
 [workspace.package]
@@ -151,7 +151,8 @@ egui_system_font_provider = { git = "https://github.com/storytold/egui.git", rev
 eframe = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
 egui_demo_lib = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
 egui_inspection = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
-winit = { git = "https://github.com/storytold/winit.git", rev = "a517b3846ee8457d84ee4975110bfda6797c44dc" }
+# Same reviewed fork revision, with native file-drag pointer coordinates; see vendor/winit/FIGCRAFT.md.
+winit = { path = "vendor/winit" }
 
 # craft-libs' vendored krilla 0.8.2: decoded PNGs are capped at 1 GiB and reserved fallibly, and a
 # panic while drawing unwinds without aborting.
