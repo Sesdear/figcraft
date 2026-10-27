@@ -2,6 +2,7 @@
 
 use crate::dpi::PhysicalPosition;
 
+/// The identities and frozen release point needed to deliver a completed transfer.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct PendingDrop {
     pub source: u32,
@@ -9,6 +10,7 @@ pub(super) struct PendingDrop {
     pub position: Option<PhysicalPosition<f64>>,
 }
 
+/// Correlates one URI reply with one release, allowing either event to arrive first.
 #[derive(Debug)]
 pub(super) struct FileDropTransfer {
     source: u32,
@@ -22,6 +24,7 @@ pub(super) struct FileDropTransfer {
 }
 
 impl FileDropTransfer {
+    /// Starts a gesture whose private requestor window isolates it from canceled replies.
     pub fn new(source: u32, target: u32, requestor: u32) -> Self {
         Self {
             source,
@@ -35,22 +38,27 @@ impl FileDropTransfer {
         }
     }
 
+    /// Accepts messages only from this unfinished gesture's source and destination.
     pub fn matches(&self, source: u32, target: u32) -> bool {
         !self.finished && self.source == source && self.target == target
     }
 
+    /// Returns the source window that must retain ownership of the XDND selection.
     pub fn source(&self) -> u32 {
         self.source
     }
 
+    /// Returns the destination window to receive hover and drop events.
     pub fn target(&self) -> u32 {
         self.target
     }
 
+    /// Returns the private window whose property stores this conversion's URI reply.
     pub fn requestor(&self) -> u32 {
         self.requestor
     }
 
+    /// Reports whether release has frozen the coordinates and disabled further requests.
     pub fn dropped(&self) -> bool {
         self.dropped
     }
@@ -64,6 +72,8 @@ impl FileDropTransfer {
         true
     }
 
+    /// Validates requestor identity and timestamp before consuming selection data.
+    /// A CurrentTime request has no known server timestamp, so only its time check is waived.
     pub fn expects_reply(&self, requestor: u32, time: u32) -> bool {
         !self.finished
             && !self.ready
@@ -72,6 +82,7 @@ impl FileDropTransfer {
             && self.request_time.is_some_and(|requested| requested == 0 || requested == time)
     }
 
+    /// Marks a matching conversion complete; rejects stale and duplicate replies.
     pub fn receive_reply(&mut self, requestor: u32, time: u32) -> bool {
         if !self.expects_reply(requestor, time) {
             return false;
@@ -81,6 +92,7 @@ impl FileDropTransfer {
         true
     }
 
+    /// Freezes the first matching release point while allowing a pending URI reply to finish.
     pub fn drop_at(
         &mut self,
         source: u32,
@@ -95,6 +107,7 @@ impl FileDropTransfer {
         true
     }
 
+    /// Consumes a transfer exactly once, after both release and its URI reply have arrived.
     pub fn finish(&mut self) -> Option<PendingDrop> {
         if self.finished || !self.dropped || !self.ready {
             return None;

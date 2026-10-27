@@ -390,6 +390,7 @@ declare_class!(
             1
         }
 
+        /// Tracks file-drag coordinates and returns the NSUInteger copy-operation mask.
         #[method(draggingUpdated:)]
         fn dragging_updated(&self, sender: &NSObject) -> usize {
             let pb: Retained<NSPasteboard> = unsafe { msg_send_id![sender, draggingPasteboard] };
@@ -835,6 +836,8 @@ impl WindowDelegate {
         self.ivars().app_delegate.maybe_queue_window_event(self.window().id(), event);
     }
 
+    /// Replays an NSDraggingInfo window point in flipped view coordinates, scaled once to pixels.
+    /// Call only from dragging-destination callbacks whose sender implements NSDraggingInfo.
     fn file_drag_motion(&self, sender: &NSObject) {
         // SAFETY: Only NSDraggingDestination callbacks pass their NSDraggingInfo sender here.
         // Its draggingLocation is window-local logical points, not global screen coordinates.

@@ -183,7 +183,8 @@ fn dropped(app: &mut FigApp, ctx: &egui::Context) {
     if ctx.current_pass_index() != 0 {
         return;
     }
-    let files = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
+    let mut files = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
+    crate::open::limit_drop(app, &mut files);
     for f in files {
         if !crate::opens(f.path()) {
             app.toast(tr("Drop a .figcraft, .fig, .sketch, .json, .svg or image file."));

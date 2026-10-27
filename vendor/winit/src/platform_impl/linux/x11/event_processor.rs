@@ -474,6 +474,8 @@ impl EventProcessor {
         }
     }
 
+    /// Dispatches window-manager messages and advances XDND gestures by source/target identity.
+    /// File positions come from XDND root pixels; release waits for its matching URI reply.
     fn client_message<T: 'static, F>(&mut self, xev: &XClientMessageEvent, mut callback: F)
     where
         F: FnMut(&RootAEL, Event<T>),
@@ -674,6 +676,8 @@ impl EventProcessor {
         }
     }
 
+    /// Delivers a released, ready transfer once, replaying its frozen point before its files.
+    /// Consumes state before callbacks and acknowledges rejection when URI conversion failed.
     fn finish_file_drop<T: 'static, F>(&mut self, callback: &mut F)
     where
         F: FnMut(&RootAEL, Event<T>),
@@ -720,6 +724,8 @@ impl EventProcessor {
         }
     }
 
+    /// Consumes URI data only for the current requestor, timestamp and selection owner.
+    /// A reply can complete a waiting drop or publish hover data while release is still pending.
     fn selection_notify<T: 'static, F>(&mut self, xev: &XSelectionEvent, mut callback: F)
     where
         F: FnMut(&RootAEL, Event<T>),

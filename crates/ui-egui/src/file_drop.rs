@@ -31,12 +31,13 @@ pub(crate) fn canvas(app: &mut FigApp, ctx: &Context) {
     if ctx.current_pass_index() != 0 {
         return;
     }
-    let files = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
+    let mut files = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
     let Some(pos) = pos else { return };
     let pt = app.to_page(pos);
     if !pt.x.is_finite() || !pt.y.is_finite() {
         return;
     }
+    crate::open::limit_drop(app, &mut files);
     let mut refused = false;
     for file in files {
         let path = file.path();
@@ -59,12 +60,20 @@ pub(crate) fn canvas(app: &mut FigApp, ctx: &Context) {
             continue;
         };
         let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let (read, resources) = match crate::dropped_bytes(&file, &name) {
+            Ok(read) => read,
+            Err(error) => {
+                app.show_error(error);
+                continue;
+            }
+        };
         app.ui.pending_opens.push(PendingOpen {
             label: name.clone(),
             params: json!({"name": name, "x": pt.x, "y": pt.y}),
             command: "file.import",
             target: Some(target),
-            read: Some(crate::dropped_bytes(&file, &name)),
+            read: Some(read),
+            resources: Some(resources),
         });
     }
 }

@@ -158,3 +158,32 @@ fn cocoa_updates_motion_and_emits_actual_drop_point_before_files() {
     assert!(helper.contains("convertPoint_fromView(window_point, None)"));
     assert!(helper.contains("file_drop_position::logical_position("));
 }
+
+#[test]
+fn wayland_reader_setup_failures_withdraw_acceptance() {
+    let text = source("linux/wayland/seat/dnd.rs");
+    let reject = section(&text, "fn reject_file_offer", "pub struct FileDrag");
+    before(reject, "offer.accept_mime_type(offer.serial, None)", "conn.flush()");
+    assert!(!reject.contains("offer.finish("));
+    assert!(!reject.contains("offer.destroy("));
+    let enter = section(&text, "    fn enter(", "    fn leave(");
+    for message in ["Failed to receive a dragged file list", "Failed to watch a dragged file list"]
+    {
+        let failure = section(enter, message, "return;");
+        assert!(failure.contains("reject_file_offer(&offer, conn)"));
+    }
+    let missing_seat = section(enter, "let Some(seat_state)", "seat_state.file_drag = Some");
+    before(missing_seat, "self.loop_handle.remove(reader)", "reject_file_offer(&offer, conn)");
+}
+
+#[test]
+fn macos_webkit_cursor_uses_separate_hotspot_axes() {
+    let text = source("macos/cursor.rs");
+    let x = section(&text, "let mut x = 0.0", "let mut y = 0.0");
+    let y = section(&text, "let mut y = 0.0", "let hotspot");
+    assert!(x.contains("ns_string!(\"hotx\")"));
+    assert!(y.contains("ns_string!(\"hoty\")"));
+    assert!(!y.contains("ns_string!(\"hotx\")"));
+    assert!(text.contains("CursorIcon::Move | CursorIcon::AllScroll => webkit_move()"));
+    assert!(text.contains("CursorIcon::Cell => webkit_cell()"));
+}

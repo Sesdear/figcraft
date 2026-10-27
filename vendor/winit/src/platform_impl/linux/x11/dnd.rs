@@ -55,6 +55,7 @@ pub struct Dnd {
 }
 
 impl Dnd {
+    /// Creates idle XDND state; no requestor window is allocated until a gesture begins.
     pub fn new(xconn: Arc<XConnection>) -> Result<Self, X11Error> {
         Ok(Dnd {
             xconn,
@@ -68,6 +69,7 @@ impl Dnd {
         })
     }
 
+    /// Cancels pending data and coordinates, destroying the gesture's private requestor window.
     pub fn reset(&mut self) {
         self.version = None;
         self.type_list = None;
@@ -78,6 +80,8 @@ impl Dnd {
         self.result = None;
     }
 
+    /// Replaces any old gesture with isolated selection-property storage for this source/target.
+    /// If requestor creation fails, the old transfer has already been released and state is idle.
     pub(super) fn begin_transfer(
         &mut self,
         source: xproto::Window,
@@ -211,6 +215,7 @@ struct FileDropRequestor {
 }
 
 impl FileDropRequestor {
+    /// Creates an unmapped input-only window; the temporary wrapper cleans up creation failure.
     fn new(xconn: Arc<XConnection>) -> Result<Self, X11Error> {
         let (window, cookie) = xproto::WindowWrapper::create_window_and_get_cookie(
             xconn.xcb_connection(),
@@ -232,6 +237,7 @@ impl FileDropRequestor {
 }
 
 impl Drop for FileDropRequestor {
+    /// Releases server-side property storage on cancellation, completion or backend teardown.
     fn drop(&mut self) {
         if let Ok(cookie) = self.xconn.xcb_connection().destroy_window(self.window) {
             cookie.ignore_error();

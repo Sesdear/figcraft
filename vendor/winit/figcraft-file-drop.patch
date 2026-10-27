@@ -17,7 +17,7 @@
 @@ -364,10 +365,6 @@
  console_error_panic_hook = "0.1"
  tracing-web = "0.1"
- 
+
 -[[example]]
 -doc-scrape-examples = true
 -name = "window"
@@ -33,14 +33,16 @@
 +
 +#[cfg(any(x11_platform, wayland_platform, windows_platform, macos_platform, test))]
 +mod file_drop_position;
- 
+
  #[cfg(android_platform)]
  mod android;
 --- /dev/null
 +++ b/src/platform_impl/file_drop_position.rs
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,75 @@
 +//! Small coordinate conversions shared by the native file-drop bridges.
 +
++/// Converts surface-local logical points to physical pixels with one scale application.
++/// Rejects invalid scales, non-finite input and coordinates that overflow during scaling.
 +#[cfg(any(wayland_platform, macos_platform, test))]
 +pub(super) fn logical_position(
 +    x: f64,
@@ -54,6 +56,8 @@
 +    (position.x.is_finite() && position.y.is_finite()).then_some(position)
 +}
 +
++/// Converts physical screen pixels into client pixels without applying DPI scaling again.
++/// Wide subtraction preserves negative monitor origins and extreme signed coordinates.
 +#[cfg(any(windows_platform, test))]
 +pub(super) fn screen_position(
 +    point: (i32, i32),
@@ -65,6 +69,7 @@
 +    )
 +}
 +
++/// Unpacks XDND root coordinates as signed 16-bit pixels, preserving negative monitor positions.
 +#[cfg(any(x11_platform, test))]
 +pub(super) fn xdnd_root_position(packed: u32) -> (i16, i16) {
 +    ((packed >> 16) as u16 as i16, packed as u16 as i16)
@@ -111,7 +116,7 @@
 +}
 --- a/src/platform_impl/linux/wayland/seat/dnd.rs
 +++ b/src/platform_impl/linux/wayland/seat/dnd.rs
-@@ -24,17 +24,23 @@
+@@ -24,17 +24,30 @@
  use sctk::reexports::client::protocol::wl_surface::WlSurface;
  use sctk::reexports::client::{Connection, Proxy, QueueHandle};
 
@@ -124,6 +129,13 @@
 +
 +/// Allow thousands of local file URIs, but bound memory held by an untrusted drag source.
 +const MAX_URI_LIST_BYTES: usize = 1024 * 1024;
++
++/// Withdraw acceptance when no reader can service this offer. Before a drop, finish is not
++/// permitted: rejecting the MIME type and flushing matches unsupported-MIME handling.
++fn reject_file_offer(offer: &DragOffer, conn: &Connection) {
++    offer.accept_mime_type(offer.serial, None);
++    let _ = conn.flush();
++}
 
  /// A file drag over one of our windows.
  #[derive(Debug)]
@@ -135,10 +147,11 @@
      /// The files in the drag, once the list has been read.
      paths: Option<Vec<PathBuf>>,
      /// Bytes of the list read so far.
-@@ -48,6 +54,24 @@
+@@ -48,6 +61,25 @@
  }
 
  impl WinitState {
++    /// Emits a physical cursor point using the receiving surface's current scale factor.
 +    fn file_drag_motion(&mut self, window_id: WindowId, position: LogicalPosition<f64>) {
 +        let Some(window) = self.windows.get_mut().get(&window_id) else { return };
 +        let Ok(window) = window.lock() else { return };
@@ -160,7 +173,7 @@
      /// Ends the file drag of a seat without dropping it.
      pub(super) fn cancel_file_drag(&mut self, seat: &ObjectId) {
          let Some(drag) = self.seats.get_mut(seat).and_then(|seat| seat.file_drag.take()) else {
-@@ -95,6 +119,9 @@
+@@ -95,32 +127,32 @@
          }
          drag.offer.destroy();
 
@@ -170,11 +183,14 @@
          for path in drag.paths.unwrap_or_default() {
              self.events_sink.push_window_event(WindowEvent::DroppedFile(path), drag.window_id);
          }
-@@ -102,25 +129,20 @@
+         self.dispatched_events = true;
      }
 
-     /// Reads the part of a seat's list that is ready, telling the loop whether to keep watching.
+-    /// Reads the part of a seat's list that is ready, telling the loop whether to keep watching.
 -    fn read_file_drag(&mut self, seat: &ObjectId, mut pipe: &File) -> PostAction {
++    /// Reads one ready URI chunk, keeping the source registered only while more data is needed.
++    /// Permanent errors, including the size limit, release bytes and complete with an empty list;
++    /// PostAction::Remove deregisters and closes the reader even when a drop is already pending.
 +    fn read_file_drag(&mut self, seat: &ObjectId, pipe: &File) -> PostAction {
          let Some(drag) = self.seats.get_mut(seat).and_then(|seat| seat.file_drag.as_mut()) else {
              return PostAction::Remove;
@@ -200,7 +216,7 @@
              Err(error)
                  if matches!(error.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock) =>
              {
-@@ -130,21 +152,39 @@
+@@ -130,21 +162,41 @@
                  warn!("Failed to read a dragged file list: {error}");
                  drag.reader = None;
                  drag.paths = Some(Vec::new());
@@ -230,6 +246,8 @@
 +}
 +
  impl DataDeviceHandler for WinitState {
++    /// Accepts local-file offers only with a registered reader; setup failures withdraw MIME
++    /// acceptance and flush without finishing an offer that has not been dropped.
      fn enter(
          &mut self,
          conn: &Connection,
@@ -242,7 +260,38 @@
          surface: &WlSurface,
      ) {
          let data = data_device.data::<DataDeviceData>().unwrap();
-@@ -191,12 +231,14 @@
+@@ -155,8 +207,7 @@
+         let window_id = make_wid(surface);
+         let offers_files = offer.with_mime_types(|types| types.iter().any(|mime| mime == URI_LIST));
+         if !offers_files || !self.windows.get_mut().contains_key(&window_id) {
+-            offer.accept_mime_type(offer.serial, None);
+-            let _ = conn.flush();
++            reject_file_offer(&offer, conn);
+             return;
+         }
+
+@@ -166,6 +217,7 @@
+             Ok(pipe) => pipe,
+             Err(error) => {
+                 warn!("Failed to receive a dragged file list: {error}");
++                reject_file_offer(&offer, conn);
+                 return;
+             },
+         };
+@@ -180,23 +232,27 @@
+             Ok(reader) => reader,
+             Err(error) => {
+                 warn!("Failed to watch a dragged file list: {error}");
++                reject_file_offer(&offer, conn);
+                 return;
+             },
+         };
+
+         let Some(seat_state) = self.seats.get_mut(&seat) else {
+             self.loop_handle.remove(reader);
++            reject_file_offer(&offer, conn);
+             return;
+         };
          seat_state.file_drag = Some(FileDrag {
              offer,
              window_id,
@@ -257,7 +306,14 @@
      }
 
      fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, data_device: &WlDataDevice) {
-@@ -217,15 +259,18 @@
+@@ -212,20 +268,25 @@
+         }
+     }
+
++    /// Retains the surface-local point during asynchronous reading and reaffirms MIME acceptance
++    /// without restarting action negotiation, which can interrupt a quick drop.
+     fn motion(
+         &mut self,
          conn: &Connection,
          _: &QueueHandle<Self>,
          data_device: &WlDataDevice,
@@ -279,7 +335,7 @@
          }
      }
 
-@@ -379,16 +424,81 @@
+@@ -379,16 +440,81 @@
  mod tests {
      use super::*;
 
@@ -365,7 +421,7 @@
      }
 
      #[test]
-@@ -406,10 +516,10 @@
+@@ -406,10 +532,10 @@
 
      #[test]
      fn accepts_localhost_and_skips_other_hosts() {
@@ -392,11 +448,12 @@
  mod ime;
 --- /dev/null
 +++ b/src/platform_impl/linux/x11/file_drop_state.rs
-@@ -0,0 +1,213 @@
+@@ -0,0 +1,226 @@
 +//! Pure lifecycle state for a single XDND URI transfer.
 +
 +use crate::dpi::PhysicalPosition;
 +
++/// The identities and frozen release point needed to deliver a completed transfer.
 +#[derive(Debug, Clone, Copy, PartialEq)]
 +pub(super) struct PendingDrop {
 +    pub source: u32,
@@ -404,6 +461,7 @@
 +    pub position: Option<PhysicalPosition<f64>>,
 +}
 +
++/// Correlates one URI reply with one release, allowing either event to arrive first.
 +#[derive(Debug)]
 +pub(super) struct FileDropTransfer {
 +    source: u32,
@@ -417,6 +475,7 @@
 +}
 +
 +impl FileDropTransfer {
++    /// Starts a gesture whose private requestor window isolates it from canceled replies.
 +    pub fn new(source: u32, target: u32, requestor: u32) -> Self {
 +        Self {
 +            source,
@@ -430,22 +489,27 @@
 +        }
 +    }
 +
++    /// Accepts messages only from this unfinished gesture's source and destination.
 +    pub fn matches(&self, source: u32, target: u32) -> bool {
 +        !self.finished && self.source == source && self.target == target
 +    }
 +
++    /// Returns the source window that must retain ownership of the XDND selection.
 +    pub fn source(&self) -> u32 {
 +        self.source
 +    }
 +
++    /// Returns the destination window to receive hover and drop events.
 +    pub fn target(&self) -> u32 {
 +        self.target
 +    }
 +
++    /// Returns the private window whose property stores this conversion's URI reply.
 +    pub fn requestor(&self) -> u32 {
 +        self.requestor
 +    }
 +
++    /// Reports whether release has frozen the coordinates and disabled further requests.
 +    pub fn dropped(&self) -> bool {
 +        self.dropped
 +    }
@@ -459,6 +523,8 @@
 +        true
 +    }
 +
++    /// Validates requestor identity and timestamp before consuming selection data.
++    /// A CurrentTime request has no known server timestamp, so only its time check is waived.
 +    pub fn expects_reply(&self, requestor: u32, time: u32) -> bool {
 +        !self.finished
 +            && !self.ready
@@ -467,6 +533,7 @@
 +            && self.request_time.is_some_and(|requested| requested == 0 || requested == time)
 +    }
 +
++    /// Marks a matching conversion complete; rejects stale and duplicate replies.
 +    pub fn receive_reply(&mut self, requestor: u32, time: u32) -> bool {
 +        if !self.expects_reply(requestor, time) {
 +            return false;
@@ -476,6 +543,7 @@
 +        true
 +    }
 +
++    /// Freezes the first matching release point while allowing a pending URI reply to finish.
 +    pub fn drop_at(
 +        &mut self,
 +        source: u32,
@@ -490,6 +558,7 @@
 +        true
 +    }
 +
++    /// Consumes a transfer exactly once, after both release and its URI reply have arrived.
 +    pub fn finish(&mut self) -> Option<PendingDrop> {
 +        if self.finished || !self.dropped || !self.ready {
 +            return None;
@@ -609,16 +678,16 @@
 --- a/src/platform_impl/linux/x11/dnd.rs
 +++ b/src/platform_impl/linux/x11/dnd.rs
 @@ -9,7 +9,9 @@
- 
+
  use super::atoms::AtomName::None as DndNone;
  use super::atoms::*;
 +use super::file_drop_state::FileDropTransfer;
  use super::{util, CookieResultExt, X11Error, XConnection};
 +use crate::dpi::PhysicalPosition;
- 
+
  #[derive(Debug, Clone, Copy)]
  pub enum DndState {
-@@ -45,20 +47,49 @@
+@@ -45,20 +47,53 @@
      pub type_list: Option<Vec<xproto::Atom>>,
      // Populated by XdndPosition event handler
      pub source_window: Option<xproto::Window>,
@@ -628,10 +697,13 @@
      // Populated by SelectionNotify event handler (triggered by XdndPosition event handler)
      pub result: Option<Result<Vec<PathBuf>, DndDataParseError>>,
  }
- 
+
  impl Dnd {
++    /// Creates idle XDND state; no requestor window is allocated until a gesture begins.
      pub fn new(xconn: Arc<XConnection>) -> Result<Self, X11Error> {
 -        Ok(Dnd { xconn, version: None, type_list: None, source_window: None, result: None })
+-    }
+-
 +        Ok(Dnd {
 +            xconn,
 +            version: None,
@@ -642,8 +714,9 @@
 +            requestor: None,
 +            result: None,
 +        })
-     }
- 
++    }
++
++    /// Cancels pending data and coordinates, destroying the gesture's private requestor window.
      pub fn reset(&mut self) {
          self.version = None;
          self.type_list = None;
@@ -654,6 +727,8 @@
          self.result = None;
 +    }
 +
++    /// Replaces any old gesture with isolated selection-property storage for this source/target.
++    /// If requestor creation fails, the old transfer has already been released and state is idle.
 +    pub(super) fn begin_transfer(
 +        &mut self,
 +        source: xproto::Window,
@@ -667,9 +742,9 @@
 +        self.requestor = Some(requestor);
 +        Ok(())
      }
- 
+
      pub unsafe fn send_status(
-@@ -172,3 +203,38 @@
+@@ -172,3 +207,40 @@
          }
      }
  }
@@ -681,6 +756,7 @@
 +}
 +
 +impl FileDropRequestor {
++    /// Creates an unmapped input-only window; the temporary wrapper cleans up creation failure.
 +    fn new(xconn: Arc<XConnection>) -> Result<Self, X11Error> {
 +        let (window, cookie) = xproto::WindowWrapper::create_window_and_get_cookie(
 +            xconn.xcb_connection(),
@@ -702,6 +778,7 @@
 +}
 +
 +impl Drop for FileDropRequestor {
++    /// Releases server-side property storage on cancellation, completion or backend teardown.
 +    fn drop(&mut self) {
 +        if let Ok(cookie) = self.xconn.xcb_connection().destroy_window(self.window) {
 +            cookie.ignore_error();
@@ -710,8 +787,17 @@
 +}
 --- a/src/platform_impl/linux/x11/event_processor.rs
 +++ b/src/platform_impl/linux/x11/event_processor.rs
-@@ -518,6 +518,11 @@
- 
+@@ -474,6 +474,8 @@
+         }
+     }
+
++    /// Dispatches window-manager messages and advances XDND gestures by source/target identity.
++    /// File positions come from XDND root pixels; release waits for its matching URI reply.
+     fn client_message<T: 'static, F>(&mut self, xev: &XClientMessageEvent, mut callback: F)
+     where
+         F: FnMut(&RootAEL, Event<T>),
+@@ -518,6 +520,11 @@
+
          if xev.message_type == atoms[XdndEnter] as c_ulong {
              let source_window = xev.data.get_long(0) as xproto::Window;
 +            // A new offer cannot inherit files, a pending reply or coordinates from an old one.
@@ -722,7 +808,7 @@
              let flags = xev.data.get_long(1);
              let version = flags >> 24;
              self.dnd.version = Some(version);
-@@ -540,20 +545,14 @@
+@@ -540,20 +547,14 @@
              // over our window. We emit HoveredFile in response; while the macOS backend
              // does that upon a drag entering, XDND doesn't have access to the actual drop
              // data until this event. For parity with other platforms, we only emit
@@ -731,7 +817,7 @@
 -            // that here would be trivial.
 +            // `HoveredFile` the first time. CursorMoved separately keeps the actual drag
 +            // position available to clients without changing the file-event API.
- 
+
              let source_window = xev.data.get_long(0) as xproto::Window;
 -
 -            // Equivalent to `(x << shift) | y`
@@ -746,13 +832,13 @@
 +            if !transfer.matches(source_window, window) || transfer.dropped() {
 +                return;
 +            }
- 
+
              // By our own state flow, `version` should never be `None` at this point.
              let version = self.dnd.version.unwrap_or(5);
-@@ -577,21 +576,44 @@
+@@ -577,21 +578,44 @@
                  return;
              }
- 
+
 +            // XDND packs signed physical root coordinates, including negative monitor origins.
 +            // Translate through X11 rather than subtracting the decorated window's position.
 +            let packed = xev.data.get_long(2) as u32;
@@ -807,10 +893,10 @@
 +                    }
                  }
              }
- 
-@@ -604,73 +626,177 @@
+
+@@ -604,73 +628,181 @@
          }
- 
+
          if xev.message_type == atoms[XdndDrop] as c_ulong {
 -            let (source_window, state) = if let Some(source_window) = self.dnd.source_window {
 -                if let Some(Ok(ref path_list)) = self.dnd.result {
@@ -870,6 +956,8 @@
 +        }
 +    }
 +
++    /// Delivers a released, ready transfer once, replaying its frozen point before its files.
++    /// Consumes state before callbacks and acknowledges rejection when URI conversion failed.
 +    fn finish_file_drop<T: 'static, F>(&mut self, callback: &mut F)
 +    where
 +        F: FnMut(&RootAEL, Event<T>),
@@ -916,6 +1004,8 @@
 +        }
 +    }
 +
++    /// Consumes URI data only for the current requestor, timestamp and selection owner.
++    /// A reply can complete a waiting drop or publish hover data while release is still pending.
 +    fn selection_notify<T: 'static, F>(&mut self, xev: &XSelectionEvent, mut callback: F)
 +    where
 +        F: FnMut(&RootAEL, Event<T>),
@@ -1043,7 +1133,7 @@
 +        self.dnd.result = Some(result);
 +        self.finish_file_drop(&mut callback);
      }
- 
+
      fn configure_notify<T: 'static, F>(&self, xev: &XConfigureEvent, mut callback: F)
 --- a/src/platform_impl/windows/definitions.rs
 +++ b/src/platform_impl/windows/definitions.rs
@@ -1077,13 +1167,21 @@
 @@ -17,7 +17,7 @@
  };
  use crate::platform_impl::platform::WindowId;
- 
+
 -use crate::event::Event;
 +use crate::event::{Event, WindowEvent};
  use crate::window::WindowId as RootWindowId;
- 
+
  #[repr(C)]
-@@ -80,13 +80,14 @@
+@@ -76,17 +76,22 @@
+         count as u32
+     }
+
++    /// Publishes the COM drag point before hover events and accepts file-list data for copying.
++    ///
++    /// # Safety
++    /// COM must supply a live handler, a valid IDataObject and a writable effect pointer.
+     pub unsafe extern "system" fn DragEnter(
          this: *mut IDropTarget,
          pDataObj: *const IDataObject,
          _grfKeyState: u32,
@@ -1099,7 +1197,14 @@
                  drop_handler.send_event(Event::WindowEvent {
                      window_id: RootWindowId(WindowId(drop_handler.window)),
                      event: HoveredFile(filename),
-@@ -106,10 +107,13 @@
+@@ -103,13 +108,20 @@
+         S_OK
+     }
+
++    /// Updates physical cursor coordinates only while a valid file offer is hovering.
++    ///
++    /// # Safety
++    /// COM must supply a live handler and a writable effect pointer.
      pub unsafe extern "system" fn DragOver(
          this: *mut IDropTarget,
          _grfKeyState: u32,
@@ -1114,16 +1219,25 @@
          unsafe {
              *pdwEffect = drop_handler.cursor_effect;
          }
-@@ -126,6 +130,8 @@
+@@ -126,21 +138,28 @@
                  event: HoveredFileCancelled,
              });
          }
+-
+-        S_OK
+-    }
+-
 +        drop_handler.hovered_is_valid = false;
 +        drop_handler.cursor_effect = DROPEFFECT_NONE;
- 
-         S_OK
-     }
-@@ -134,13 +140,14 @@
++
++        S_OK
++    }
++
++    /// Replays the release point before each dropped filename, then clears hover state.
++    ///
++    /// # Safety
++    /// COM must supply a live handler and a valid IDataObject for the duration of this callback.
+     pub unsafe extern "system" fn Drop(
          this: *mut IDropTarget,
          pDataObj: *const IDataObject,
          _grfKeyState: u32,
@@ -1139,19 +1253,21 @@
                  drop_handler.send_event(Event::WindowEvent {
                      window_id: RootWindowId(WindowId(drop_handler.window)),
                      event: DroppedFile(filename),
-@@ -150,6 +157,8 @@
+@@ -150,6 +169,8 @@
          if let Some(hdrop) = hdrop {
              unsafe { DragFinish(hdrop) };
          }
 +        drop_handler.hovered_is_valid = false;
 +        drop_handler.cursor_effect = DROPEFFECT_NONE;
- 
+
          S_OK
      }
-@@ -211,6 +220,20 @@
+@@ -211,6 +232,22 @@
  }
- 
+
  impl FileDropHandlerData {
++    /// Converts the by-value COM screen point to physical client pixels and emits CursorMoved.
++    /// Uses the current client origin without another DPI conversion or pointer-position query.
 +    fn file_drag_motion(&self, point: POINTL) {
 +        // IDropTarget receives POINTL by value, in physical screen coordinates. Reuse the
 +        // existing safe client-area query, retaining the event's point rather than polling it.
@@ -1171,7 +1287,7 @@
      }
 --- a/src/platform_impl/macos/window_delegate.rs
 +++ b/src/platform_impl/macos/window_delegate.rs
-@@ -368,8 +368,49 @@
+@@ -368,8 +368,50 @@
      unsafe impl NSDraggingDestination for WindowDelegate {
          /// Invoked when the dragged image enters destination bounds or frame
          #[method(draggingEntered:)]
@@ -1198,6 +1314,7 @@
 +            1
 +        }
 +
++        /// Tracks file-drag coordinates and returns the NSUInteger copy-operation mask.
 +        #[method(draggingUpdated:)]
 +        fn dragging_updated(&self, sender: &NSObject) -> usize {
 +            let pb: Retained<NSPasteboard> = unsafe { msg_send_id![sender, draggingPasteboard] };
@@ -1219,13 +1336,13 @@
 +        #[method(performDragOperation:)]
 +        fn perform_drag_operation(&self, sender: &NSObject) -> bool {
 +            trace_scope!("performDragOperation:");
- 
+
              use std::path::PathBuf;
- 
-@@ -380,35 +421,7 @@
+
+@@ -380,35 +422,7 @@
              };
              let filenames: Retained<NSArray<NSString>> = unsafe { Retained::cast(filenames) };
- 
+
 -            filenames.into_iter().for_each(|file| {
 -                let path = PathBuf::from(file.to_string());
 -                self.queue_event(WindowEvent::HoveredFile(path));
@@ -1259,10 +1376,12 @@
              filenames.into_iter().for_each(|file| {
                  let path = PathBuf::from(file.to_string());
                  self.queue_event(WindowEvent::DroppedFile(path));
-@@ -822,6 +835,20 @@
+@@ -822,6 +836,22 @@
          self.ivars().app_delegate.maybe_queue_window_event(self.window().id(), event);
      }
- 
+
++    /// Replays an NSDraggingInfo window point in flipped view coordinates, scaled once to pixels.
++    /// Call only from dragging-destination callbacks whose sender implements NSDraggingInfo.
 +    fn file_drag_motion(&self, sender: &NSObject) {
 +        // SAFETY: Only NSDraggingDestination callbacks pass their NSDraggingInfo sender here.
 +        // Its draggingLocation is window-local logical points, not global screen coordinates.
@@ -1282,7 +1401,7 @@
          let window = self.window();
 --- /dev/null
 +++ b/tests/file_drop_patches.rs
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,189 @@
 +//! Cross-platform regression guards for FigCraft's native file-drag coordinate bridge.
 +//! As with pointer_patches.rs, source guards cover platforms unavailable on the test host;
 +//! the shared coordinate conversions are also exercised directly, without a display server.
@@ -1443,3 +1562,318 @@
 +    assert!(helper.contains("convertPoint_fromView(window_point, None)"));
 +    assert!(helper.contains("file_drop_position::logical_position("));
 +}
++
++#[test]
++fn wayland_reader_setup_failures_withdraw_acceptance() {
++    let text = source("linux/wayland/seat/dnd.rs");
++    let reject = section(&text, "fn reject_file_offer", "pub struct FileDrag");
++    before(reject, "offer.accept_mime_type(offer.serial, None)", "conn.flush()");
++    assert!(!reject.contains("offer.finish("));
++    assert!(!reject.contains("offer.destroy("));
++    let enter = section(&text, "    fn enter(", "    fn leave(");
++    for message in ["Failed to receive a dragged file list", "Failed to watch a dragged file list"]
++    {
++        let failure = section(enter, message, "return;");
++        assert!(failure.contains("reject_file_offer(&offer, conn)"));
++    }
++    let missing_seat = section(enter, "let Some(seat_state)", "seat_state.file_drag = Some");
++    before(missing_seat, "self.loop_handle.remove(reader)", "reject_file_offer(&offer, conn)");
++}
++
++#[test]
++fn macos_webkit_cursor_uses_separate_hotspot_axes() {
++    let text = source("macos/cursor.rs");
++    let x = section(&text, "let mut x = 0.0", "let mut y = 0.0");
++    let y = section(&text, "let mut y = 0.0", "let hotspot");
++    assert!(x.contains("ns_string!(\"hotx\")"));
++    assert!(y.contains("ns_string!(\"hoty\")"));
++    assert!(!y.contains("ns_string!(\"hotx\")"));
++    assert!(text.contains("CursorIcon::Move | CursorIcon::AllScroll => webkit_move()"));
++    assert!(text.contains("CursorIcon::Cell => webkit_cell()"));
++}
+--- a/src/platform_impl/macos/cursor.rs
++++ b/src/platform_impl/macos/cursor.rs
+@@ -110,8 +110,12 @@
+     fn busyButClickableCursor();
+ );
+
+-// Note that loading `busybutclickable` with this code won't animate
+-// the frames; instead you'll just get them all in a column.
++/// Loads a system cursor image and its independent hotx/hoty hotspot components.
++/// Missing or non-numeric hotspot components default individually to zero. Animated resources
++/// are loaded as one static image rather than separate frames.
++///
++/// # Safety
++/// The named system resource must provide an image and a readable cursor-info dictionary.
+ unsafe fn load_webkit_cursor(name: &NSString) -> Retained<NSCursor> {
+     // Snatch a cursor from WebKit; They fit the style of the native
+     // cursors, and will seem completely standard to macOS users.
+@@ -143,7 +147,7 @@
+         }
+     }
+     let mut y = 0.0;
+-    if let Some(n) = info.get(&*ns_string!("hotx")) {
++    if let Some(n) = info.get(&*ns_string!("hoty")) {
+         if n.is_kind_of::<NSNumber>() {
+             let ptr: *const NSObject = n;
+             let ptr: *const NSNumber = ptr.cast();
+--- a/src/platform_impl/linux/x11/util/modifiers.rs
++++ /dev/null
+@@ -1,187 +0,0 @@
+-use std::{collections::HashMap, slice};
+-
+-use super::*;
+-
+-use crate::event::{ElementState, ModifiersState};
+-
+-// Offsets within XModifierKeymap to each set of keycodes.
+-// We are only interested in Shift, Control, Alt, and Logo.
+-//
+-// There are 8 sets total. The order of keycode sets is:
+-//     Shift, Lock, Control, Mod1 (Alt), Mod2, Mod3, Mod4 (Logo), Mod5
+-//
+-// https://tronche.com/gui/x/xlib/input/XSetModifierMapping.html
+-const SHIFT_OFFSET: usize = 0;
+-const CONTROL_OFFSET: usize = 2;
+-const ALT_OFFSET: usize = 3;
+-const LOGO_OFFSET: usize = 6;
+-const NUM_MODS: usize = 8;
+-
+-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+-pub enum Modifier {
+-    Alt,
+-    Ctrl,
+-    Shift,
+-    Logo,
+-}
+-
+-#[derive(Debug, Default)]
+-pub(crate) struct ModifierKeymap {
+-    // Maps keycodes to modifiers
+-    keys: HashMap<ffi::KeyCode, Modifier>,
+-}
+-
+-#[derive(Clone, Debug, Default)]
+-pub(crate) struct ModifierKeyState {
+-    // Contains currently pressed modifier keys and their corresponding modifiers
+-    keys: HashMap<ffi::KeyCode, Modifier>,
+-    state: ModifiersState,
+-}
+-
+-impl ModifierKeymap {
+-    pub fn new() -> ModifierKeymap {
+-        ModifierKeymap::default()
+-    }
+-
+-    pub fn get_modifier(&self, keycode: ffi::KeyCode) -> Option<Modifier> {
+-        self.keys.get(&keycode).cloned()
+-    }
+-
+-    pub fn reset_from_x_connection(&mut self, xconn: &XConnection) {
+-        {
+-            let keymap = xconn.xcb_connection().get_modifier_mapping().expect("get_modifier_mapping failed").reply().expect("get_modifier_mapping failed");
+-
+-            if keymap.is_null() {
+-                panic!("failed to allocate XModifierKeymap");
+-            }
+-
+-            self.reset_from_x_keymap(&*keymap);
+-
+-            (xconn.xlib.XFreeModifiermap)(keymap);
+-        }
+-    }
+-
+-    pub fn reset_from_x_keymap(&mut self, keymap: &ffi::XModifierKeymap) {
+-        let keys_per_mod = keymap.max_keypermod as usize;
+-
+-        let keys = unsafe {
+-            slice::from_raw_parts(keymap.modifiermap as *const _, keys_per_mod * NUM_MODS)
+-        };
+-
+-        self.keys.clear();
+-
+-        self.read_x_keys(keys, SHIFT_OFFSET, keys_per_mod, Modifier::Shift);
+-        self.read_x_keys(keys, CONTROL_OFFSET, keys_per_mod, Modifier::Ctrl);
+-        self.read_x_keys(keys, ALT_OFFSET, keys_per_mod, Modifier::Alt);
+-        self.read_x_keys(keys, LOGO_OFFSET, keys_per_mod, Modifier::Logo);
+-    }
+-
+-    fn read_x_keys(
+-        &mut self,
+-        keys: &[ffi::KeyCode],
+-        offset: usize,
+-        keys_per_mod: usize,
+-        modifier: Modifier,
+-    ) {
+-        let start = offset * keys_per_mod;
+-        let end = start + keys_per_mod;
+-
+-        for &keycode in &keys[start..end] {
+-            if keycode != 0 {
+-                self.keys.insert(keycode, modifier);
+-            }
+-        }
+-    }
+-}
+-
+-impl ModifierKeyState {
+-    pub fn update_keymap(&mut self, mods: &ModifierKeymap) {
+-        self.keys.retain(|k, v| {
+-            if let Some(m) = mods.get_modifier(*k) {
+-                *v = m;
+-                true
+-            } else {
+-                false
+-            }
+-        });
+-
+-        self.reset_state();
+-    }
+-
+-    pub fn update_state(
+-        &mut self,
+-        state: &ModifiersState,
+-        except: Option<Modifier>,
+-    ) -> Option<ModifiersState> {
+-        let mut new_state = *state;
+-
+-        match except {
+-            Some(Modifier::Alt) => new_state.set(ModifiersState::ALT, self.state.alt()),
+-            Some(Modifier::Ctrl) => new_state.set(ModifiersState::CTRL, self.state.ctrl()),
+-            Some(Modifier::Shift) => new_state.set(ModifiersState::SHIFT, self.state.shift()),
+-            Some(Modifier::Logo) => new_state.set(ModifiersState::LOGO, self.state.logo()),
+-            None => (),
+-        }
+-
+-        if self.state == new_state {
+-            None
+-        } else {
+-            self.keys.retain(|_k, v| get_modifier(&new_state, *v));
+-            self.state = new_state;
+-            Some(new_state)
+-        }
+-    }
+-
+-    pub fn modifiers(&self) -> ModifiersState {
+-        self.state
+-    }
+-
+-    pub fn key_event(&mut self, state: ElementState, keycode: ffi::KeyCode, modifier: Modifier) {
+-        match state {
+-            ElementState::Pressed => self.key_press(keycode, modifier),
+-            ElementState::Released => self.key_release(keycode),
+-        }
+-    }
+-
+-    pub fn key_press(&mut self, keycode: ffi::KeyCode, modifier: Modifier) {
+-        self.keys.insert(keycode, modifier);
+-
+-        set_modifier(&mut self.state, modifier, true);
+-    }
+-
+-    pub fn key_release(&mut self, keycode: ffi::KeyCode) {
+-        if let Some(modifier) = self.keys.remove(&keycode) {
+-            if !self.keys.values().any(|&m| m == modifier) {
+-                set_modifier(&mut self.state, modifier, false);
+-            }
+-        }
+-    }
+-
+-    fn reset_state(&mut self) {
+-        let mut new_state = ModifiersState::default();
+-
+-        for &m in self.keys.values() {
+-            set_modifier(&mut new_state, m, true);
+-        }
+-
+-        self.state = new_state;
+-    }
+-}
+-
+-fn get_modifier(state: &ModifiersState, modifier: Modifier) -> bool {
+-    match modifier {
+-        Modifier::Alt => state.alt(),
+-        Modifier::Ctrl => state.ctrl(),
+-        Modifier::Shift => state.shift(),
+-        Modifier::Logo => state.logo(),
+-    }
+-}
+-
+-fn set_modifier(state: &mut ModifiersState, modifier: Modifier, value: bool) {
+-    match modifier {
+-        Modifier::Alt => state.set(ModifiersState::ALT, value),
+-        Modifier::Ctrl => state.set(ModifiersState::CTRL, value),
+-        Modifier::Shift => state.set(ModifiersState::SHIFT, value),
+-        Modifier::Logo => state.set(ModifiersState::LOGO, value),
+-    }
+-}
+--- a/src/platform_impl/windows/minimal_ime.rs
++++ /dev/null
+@@ -1,67 +0,0 @@
+-use std::sync::{
+-    atomic::{AtomicBool, Ordering::Relaxed},
+-    Mutex,
+-};
+-
+-use winapi::{
+-    shared::{
+-        minwindef::{LPARAM, WPARAM},
+-        windef::HWND,
+-    },
+-    um::winuser,
+-};
+-
+-use crate::platform_impl::platform::{event_loop::ProcResult, keyboard::next_kbd_msg};
+-
+-pub struct MinimalIme {
+-    // True if we're currently receiving messages belonging to a finished IME session.
+-    getting_ime_text: AtomicBool,
+-
+-    utf16parts: Mutex<Vec<u16>>,
+-}
+-impl Default for MinimalIme {
+-    fn default() -> Self {
+-        MinimalIme {
+-            getting_ime_text: AtomicBool::new(false),
+-            utf16parts: Mutex::new(Vec::with_capacity(16)),
+-        }
+-    }
+-}
+-impl MinimalIme {
+-    pub(crate) fn process_message(
+-        &self,
+-        hwnd: HWND,
+-        msg_kind: u32,
+-        wparam: WPARAM,
+-        _lparam: LPARAM,
+-        result: &mut ProcResult,
+-    ) -> Option<String> {
+-        match msg_kind {
+-            winuser::WM_IME_ENDCOMPOSITION => {
+-                self.getting_ime_text.store(true, Relaxed);
+-            }
+-            winuser::WM_CHAR | winuser::WM_SYSCHAR => {
+-                if self.getting_ime_text.load(Relaxed) {
+-                    *result = ProcResult::Value(0);
+-                    self.utf16parts.lock().unwrap().push(wparam as u16);
+-                    // It's important that we push the new character and release the lock
+-                    // before getting the next message
+-                    let next_msg = next_kbd_msg(hwnd);
+-                    let more_char_coming = next_msg
+-                        .map(|m| matches!(m.message, winuser::WM_CHAR | winuser::WM_SYSCHAR))
+-                        .unwrap_or(false);
+-                    if !more_char_coming {
+-                        let mut utf16parts = self.utf16parts.lock().unwrap();
+-                        let result = String::from_utf16(&utf16parts).ok();
+-                        utf16parts.clear();
+-                        self.getting_ime_text.store(false, Relaxed);
+-                        return result;
+-                    }
+-                }
+-            }
+-            _ => (),
+-        }
+-
+-        None
+-    }
+-}

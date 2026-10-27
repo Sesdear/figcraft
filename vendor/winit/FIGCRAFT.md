@@ -10,7 +10,9 @@ changes, documented in [`PATCHES.md`](PATCHES.md), and its original Apache-2.0
 The copy contains the library, build script, workspace metadata and `dpi` member,
 tests and Markdown documentation. Git metadata, CI configuration, examples and
 documentation images are intentionally omitted. The manifest's example target and
-example packaging entry are removed accordingly; no runtime library source is omitted.
+example packaging entry are removed accordingly. Two unreferenced legacy modules
+(`linux/x11/util/modifiers.rs` and `windows/minimal_ime.rs`) are omitted; the active
+X11 `xmodmap` and Windows `ime`/`ime_caret` implementations are retained.
 
 ## Local native file-drop patch
 
@@ -23,6 +25,8 @@ does not add a public API or enqueue files a second time: it emits the existing
   reading, convert using the window's current scale, and replay it before delivery.
   URI lists are limited to 1 MiB; oversized lists follow the read-error path,
   releasing the buffer, completing with no files and removing the pipe reader.
+  If pipe creation or reader registration fails before the drop, withdraw MIME
+  acceptance and flush, matching unsupported-MIME rejection without calling `finish`.
 - **X11:** unpack signed root pixels and translate into client pixels. Keep one URI
   conversion in flight. Give each transfer a temporary unmapped requestor window,
   so canceled replies cannot overwrite a later transfer's property. Validate the
@@ -34,6 +38,8 @@ does not add a public API or enqueue files a second time: it emits the existing
 - **macOS:** read `NSDraggingInfo.draggingLocation` (window logical coordinates),
   convert into the flipped content view, then apply the backing scale once. Enter
   and update callbacks return an `NSUInteger` operation mask, not a Boolean.
+  WebKit-backed Move/AllScroll and Cell cursors use separate `hotx` and `hoty`
+  hotspot keys, preserving the existing system-cursor fallback.
 
 Existing cancellation and file-reading mechanisms are retained. No unsafe code is
 added to FigCraft crates. The Cocoa location message is confined to the existing
@@ -54,7 +60,8 @@ CARGO_TARGET_DIR="$PWD/target" cargo test --manifest-path vendor/winit/Cargo.tom
 The tests execute shared coordinate conversions and the pure X11 transfer state,
 including both URI/drop orderings, frozen coordinates, duplicate delivery and
 canceled/unrelated replies. Source guards cover callback ordering/ABI, following
-the fork's existing patch-test convention, and Wayland read-error cleanup. Wayland
+the fork's existing patch-test convention, Wayland setup/read-error cleanup and
+macOS hotspot key selection. Wayland
 unit tests cover URI parsing, exact size boundaries, oversized streams and read
 errors. They do not replace native OS drag tests or cross-platform compilation.
 A FigCraft X11 XDND smoke run on 2026-10-27

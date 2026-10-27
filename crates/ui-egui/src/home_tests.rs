@@ -612,6 +612,7 @@ fn a_dropped_file_whose_contents_arrive_later_opens_once_they_do() {
         command: "file.open",
         target: None,
         read: Some(later(&arrived)),
+        resources: None,
     });
     // egui lays a new card out invisibly on its first frame.
     u.frame(vec![]);
@@ -643,6 +644,7 @@ fn a_dropped_file_that_cannot_be_read_says_so_and_opens_nothing() {
         command: "file.open",
         target: None,
         read: Some(later(&arrived)),
+        resources: None,
     });
     for _ in 0..3 {
         u.frame(vec![]);

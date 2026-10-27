@@ -215,7 +215,8 @@ fn disk_reads_are_bounded_async_and_keep_the_automation_roots() {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
-    fn read(mut read: crate::ReadFuture) -> Result<Vec<u8>, String> {
+    fn read(read: Result<(crate::ReadFuture, crate::import_limits::ImportLease), String>) -> Result<Vec<u8>, String> {
+        let (mut read, _lease) = read?;
         let mut context = Context::from_waker(Waker::noop());
         for _ in 0..1000 {
             if let Poll::Ready(result) = read.as_mut().poll(&mut context) {
@@ -275,4 +276,27 @@ fn dropped_rasters_are_regular_undoable_and_persisted_image_layers() {
     let (loaded, issues) = figcraft_format::load_bytes(&saved).unwrap();
     assert!(issues.is_empty());
     assert_eq!(&loaded, doc);
+}
+
+#[test]
+fn a_large_drop_is_bounded_and_repeat_keeps_its_reservation() {
+    let mut u = editor();
+    let center = u.app.canvas.rect.center();
+    let mut files = (0..1000).map(|n| svg(&format!("bounded-{n}.svg"))).collect();
+    crate::open::limit_drop(&mut u.app, &mut files);
+    assert_eq!(files.len(), crate::import_limits::PENDING_LIMIT);
+    assert!(u.app.ui.last_error.as_ref().is_some_and(|s| s.contains("64 files")));
+    // Exercise the full import/repeat lifecycle with one file, without exhausting the shared
+    // process-wide admission slots used by unrelated UI tests running in parallel.
+    files.truncate(1);
+    drop_at(&mut u, center, files);
+    finish(&mut u);
+    assert!(!children(&u).is_empty(), "accepted files still import");
+    assert!(u.app.ui.repeat_import_memory.is_some());
+    let count = children(&u).len();
+    u.app.run("edit.repeat", json!({})).unwrap();
+    assert_eq!(children(&u).len(), count + 1);
+    assert!(u.app.ui.repeat_import_memory.is_some(), "repeat retains the original data");
+    u.app.run("shape.rectangle", json!({})).unwrap();
+    assert!(u.app.ui.repeat_import_memory.is_none(), "a new repeat command releases the input reservation");
 }

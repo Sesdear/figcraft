@@ -1,5 +1,7 @@
 //! Small coordinate conversions shared by the native file-drop bridges.
 
+/// Converts surface-local logical points to physical pixels with one scale application.
+/// Rejects invalid scales, non-finite input and coordinates that overflow during scaling.
 #[cfg(any(wayland_platform, macos_platform, test))]
 pub(super) fn logical_position(
     x: f64,
@@ -13,6 +15,8 @@ pub(super) fn logical_position(
     (position.x.is_finite() && position.y.is_finite()).then_some(position)
 }
 
+/// Converts physical screen pixels into client pixels without applying DPI scaling again.
+/// Wide subtraction preserves negative monitor origins and extreme signed coordinates.
 #[cfg(any(windows_platform, test))]
 pub(super) fn screen_position(
     point: (i32, i32),
@@ -24,6 +28,7 @@ pub(super) fn screen_position(
     )
 }
 
+/// Unpacks XDND root coordinates as signed 16-bit pixels, preserving negative monitor positions.
 #[cfg(any(x11_platform, test))]
 pub(super) fn xdnd_root_position(packed: u32) -> (i16, i16) {
     ((packed >> 16) as u16 as i16, packed as u16 as i16)

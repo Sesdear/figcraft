@@ -34,6 +34,13 @@ const URI_LIST: &str = "text/uri-list";
 /// Allow thousands of local file URIs, but bound memory held by an untrusted drag source.
 const MAX_URI_LIST_BYTES: usize = 1024 * 1024;
 
+/// Withdraw acceptance when no reader can service this offer. Before a drop, finish is not
+/// permitted: rejecting the MIME type and flushing matches unsupported-MIME handling.
+fn reject_file_offer(offer: &DragOffer, conn: &Connection) {
+    offer.accept_mime_type(offer.serial, None);
+    let _ = conn.flush();
+}
+
 /// A file drag over one of our windows.
 #[derive(Debug)]
 pub struct FileDrag {
@@ -54,6 +61,7 @@ pub struct FileDrag {
 }
 
 impl WinitState {
+    /// Emits a physical cursor point using the receiving surface's current scale factor.
     fn file_drag_motion(&mut self, window_id: WindowId, position: LogicalPosition<f64>) {
         let Some(window) = self.windows.get_mut().get(&window_id) else { return };
         let Ok(window) = window.lock() else { return };
@@ -128,7 +136,9 @@ impl WinitState {
         self.dispatched_events = true;
     }
 
-    /// Reads the part of a seat's list that is ready, telling the loop whether to keep watching.
+    /// Reads one ready URI chunk, keeping the source registered only while more data is needed.
+    /// Permanent errors, including the size limit, release bytes and complete with an empty list;
+    /// PostAction::Remove deregisters and closes the reader even when a drop is already pending.
     fn read_file_drag(&mut self, seat: &ObjectId, pipe: &File) -> PostAction {
         let Some(drag) = self.seats.get_mut(seat).and_then(|seat| seat.file_drag.as_mut()) else {
             return PostAction::Remove;
@@ -178,6 +188,8 @@ fn read_uri_list_chunk(mut pipe: impl Read, buffer: &mut Vec<u8>) -> std::io::Re
 }
 
 impl DataDeviceHandler for WinitState {
+    /// Accepts local-file offers only with a registered reader; setup failures withdraw MIME
+    /// acceptance and flush without finishing an offer that has not been dropped.
     fn enter(
         &mut self,
         conn: &Connection,
@@ -195,8 +207,7 @@ impl DataDeviceHandler for WinitState {
         let window_id = make_wid(surface);
         let offers_files = offer.with_mime_types(|types| types.iter().any(|mime| mime == URI_LIST));
         if !offers_files || !self.windows.get_mut().contains_key(&window_id) {
-            offer.accept_mime_type(offer.serial, None);
-            let _ = conn.flush();
+            reject_file_offer(&offer, conn);
             return;
         }
 
@@ -206,6 +217,7 @@ impl DataDeviceHandler for WinitState {
             Ok(pipe) => pipe,
             Err(error) => {
                 warn!("Failed to receive a dragged file list: {error}");
+                reject_file_offer(&offer, conn);
                 return;
             },
         };
@@ -220,12 +232,14 @@ impl DataDeviceHandler for WinitState {
             Ok(reader) => reader,
             Err(error) => {
                 warn!("Failed to watch a dragged file list: {error}");
+                reject_file_offer(&offer, conn);
                 return;
             },
         };
 
         let Some(seat_state) = self.seats.get_mut(&seat) else {
             self.loop_handle.remove(reader);
+            reject_file_offer(&offer, conn);
             return;
         };
         seat_state.file_drag = Some(FileDrag {
@@ -254,6 +268,8 @@ impl DataDeviceHandler for WinitState {
         }
     }
 
+    /// Retains the surface-local point during asynchronous reading and reaffirms MIME acceptance
+    /// without restarting action negotiation, which can interrupt a quick drop.
     fn motion(
         &mut self,
         conn: &Connection,

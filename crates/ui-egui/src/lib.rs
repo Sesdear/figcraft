@@ -282,6 +282,7 @@ pub use control::{ControlReply, ControlRequest, RequestGate, RequestState};
 
 mod app;
 mod clock;
+mod import_limits;
 mod open;
 mod services;
 mod state;
@@ -428,6 +429,8 @@ pub struct UiState {
     /// Files dropped on the home screen or the canvas, opened once their card has been on screen
     /// ([`pending_open::pending_opens`]), and the frames it has been drawn.
     pub pending_opens: Vec<pending_open::PendingOpen>,
+    /// A dropped import retained by edit.repeat keeps its input memory reservation.
+    pub(crate) repeat_import_memory: Option<import_limits::ImportLease>,
     pub pending_open_frames: u8,
     /// The latest successful file import's summary and compatibility notes.
     pub import_report: Option<import_report::Report>,
@@ -590,6 +593,7 @@ impl Default for UiState {
             board_panel: false,
             last_error: None,
             pending_opens: Vec::new(),
+            repeat_import_memory: None,
             pending_open_frames: 0,
             import_report: None,
             font_checks: Vec::new(),

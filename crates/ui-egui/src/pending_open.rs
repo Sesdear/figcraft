@@ -18,12 +18,16 @@ use crate::{FigApp, ReadFuture, RepaintWaker};
 pub struct PendingOpen {
     /// What the card shows for it (the file name).
     pub label: String,
+    /// Engine parameters; encoded file data stays charged to `resources` until execution ends.
     pub params: Value,
+    /// Engine entry point used once the pending read and receiving editor are ready.
     pub command: &'static str,
     /// Canvas imports stay with the document and page that received the drop.
     pub target: Option<ImportTarget>,
     /// The file's contents still on their way; they go into `params` as `data` once read.
     pub read: Option<ReadFuture>,
+    /// Owns admission and input memory through decoding; edit.repeat may retain it afterwards.
+    pub(crate) resources: Option<crate::import_limits::ImportLease>,
 }
 
 /// Destination captured at drop time so asynchronous imports survive tab or page switches.
@@ -43,15 +47,29 @@ pub struct ImportTarget {
 pub(crate) fn open_dropped(app: &mut FigApp, f: &egui::DroppedFileHandle) {
     let path = f.path();
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let (params, read) =
-        if path.exists() { (json!({"path": path.to_string_lossy()}), None) } else { (json!({"name": name}), Some(crate::dropped_bytes(f, &name))) };
-    app.ui.pending_opens.push(PendingOpen { label: name, params, command: "file.open", target: None, read });
+    let queued = if path.exists() {
+        crate::import_limits::Limits::shared()
+            .admit()
+            .map(|lease| (json!({"path": path.to_string_lossy()}), None, lease))
+            .ok_or_else(|| crate::open::import_busy(&name))
+    } else {
+        crate::dropped_bytes(f, &name).map(|(read, lease)| (json!({"name": name}), Some(read), lease))
+    };
+    match queued {
+        Ok((params, read, lease)) => {
+            app.ui.pending_opens.push(PendingOpen { label: name, params, command: "file.open", target: None, read, resources: Some(lease) })
+        }
+        Err(error) => app.show_error(error),
+    }
 }
 
 /// Imports into the captured destination, restoring the active tab and any temporarily changed page.
 /// When visiting another page, preserve the selection that was on the destination's prior page.
 /// A closed document or removed page cancels the import rather than redirecting it.
+/// Keep the input reservation through command execution; a successful import transfers it to
+/// the repeat-command owner because its encoded parameters remain available for edit.repeat.
 fn run_pending(app: &mut FigApp, pending: PendingOpen) -> Option<Value> {
+    let resources = pending.resources;
     let target = match pending.target {
         Some(target) => target,
         None if pending.command != "file.import" => return app.run_user(pending.command, pending.params),
@@ -75,6 +93,9 @@ fn run_pending(app: &mut FigApp, pending: PendingOpen) -> Option<Value> {
     app.session.active = index;
     app.session.docs[index].page = target.page;
     let result = app.run_user(pending.command, pending.params);
+    if result.is_some() && pending.command == "file.import" {
+        app.ui.repeat_import_memory = resources;
+    }
     if previous_page != target.page
         && let Some(doc) = app.session.docs.iter_mut().find(|doc| doc.uid == target.uid)
         && doc.doc.pages.contains(&previous_page)
@@ -102,7 +123,9 @@ const IMPORT_GAP: f64 = 20.0;
 const FRAMES_BEFORE_OPENING: u8 = 2;
 
 /// Polls the contents still being read: those that arrived go into their file's parameters, files
-/// that couldn't be read are dropped with a message. Whether any are still on their way.
+/// that couldn't be read are dropped with a message. Returns whether any are still on their way.
+/// Successful results keep their lease while base64 parameters wait for slower files; failed
+/// results release theirs when removed from the pending list.
 fn read_contents(app: &mut FigApp, ctx: &egui::Context) -> bool {
     let waker = Waker::from(Arc::new(RepaintWaker(ctx.clone())));
     let mut cx = TaskContext::from_waker(&waker);
@@ -117,7 +140,7 @@ fn read_contents(app: &mut FigApp, ctx: &egui::Context) -> bool {
             }
             Poll::Ready(Ok(bytes)) => {
                 use base64::Engine as _;
-                pending.params["data"] = json!(base64::engine::general_purpose::STANDARD.encode(&bytes));
+                pending.params["data"] = Value::String(base64::engine::general_purpose::STANDARD.encode(&bytes));
                 pending.read = None;
                 true
             }
@@ -192,6 +215,7 @@ pub fn pending_opens(app: &mut FigApp, ctx: &egui::Context) {
                         command: "select.set",
                         target: Some(ImportTarget { uid, page, name: String::new(), batch }),
                         read: None,
+                        resources: None,
                     },
                 );
             }

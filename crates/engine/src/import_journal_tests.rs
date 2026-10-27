@@ -49,3 +49,13 @@ fn path_imports_and_ordinary_edits_are_still_journaled() {
     assert_eq!(ids, ["file.import", "shape.rectangle"]);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn byte_opens_also_keep_no_payload_in_the_journal() {
+    let mut s = Session::new();
+    for _ in 0..3 {
+        s.execute("file.open", &json!({"data": payload(), "name": "dropped.svg"})).unwrap();
+    }
+    assert!(!holds_payload(&s.journal));
+    assert_eq!(s.docs.len(), 4);
+}

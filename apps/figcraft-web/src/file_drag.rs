@@ -55,6 +55,7 @@ impl FileDrag {
         }
     }
 
+    /// Ends an active gesture and queues pointer/hover cleanup for the next input frame.
     fn cancel(&mut self) -> bool {
         self.active = false;
         self.pointer = Some(Event::PointerGone);

@@ -76,6 +76,10 @@ impl FileDropHandler {
         count as u32
     }
 
+    /// Publishes the COM drag point before hover events and accepts file-list data for copying.
+    ///
+    /// # Safety
+    /// COM must supply a live handler, a valid IDataObject and a writable effect pointer.
     pub unsafe extern "system" fn DragEnter(
         this: *mut IDropTarget,
         pDataObj: *const IDataObject,
@@ -104,6 +108,10 @@ impl FileDropHandler {
         S_OK
     }
 
+    /// Updates physical cursor coordinates only while a valid file offer is hovering.
+    ///
+    /// # Safety
+    /// COM must supply a live handler and a writable effect pointer.
     pub unsafe extern "system" fn DragOver(
         this: *mut IDropTarget,
         _grfKeyState: u32,
@@ -136,6 +144,10 @@ impl FileDropHandler {
         S_OK
     }
 
+    /// Replays the release point before each dropped filename, then clears hover state.
+    ///
+    /// # Safety
+    /// COM must supply a live handler and a valid IDataObject for the duration of this callback.
     pub unsafe extern "system" fn Drop(
         this: *mut IDropTarget,
         pDataObj: *const IDataObject,
@@ -220,6 +232,8 @@ impl FileDropHandler {
 }
 
 impl FileDropHandlerData {
+    /// Converts the by-value COM screen point to physical client pixels and emits CursorMoved.
+    /// Uses the current client origin without another DPI conversion or pointer-position query.
     fn file_drag_motion(&self, point: POINTL) {
         // IDropTarget receives POINTL by value, in physical screen coordinates. Reuse the
         // existing safe client-area query, retaining the event's point rather than polling it.

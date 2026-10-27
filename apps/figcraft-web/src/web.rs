@@ -76,12 +76,14 @@ fn query() -> String {
     web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default()
 }
 
+/// Owns the editor and its drag listeners for the complete browser application lifetime.
 struct WebShell {
     fig: FigApp,
     file_drag: FileDragBridge,
 }
 
 impl eframe::App for WebShell {
+    /// Applies drag coordinates before the editor consumes files, scheduling any cleanup frame.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         if self.file_drag.state.borrow_mut().apply(raw) {
             ctx.request_repaint();
@@ -150,6 +152,7 @@ impl FileDragBridge {
 }
 
 impl Drop for FileDragBridge {
+    /// Unregisters callbacks before their Rust closures are freed, including partial setup failure.
     fn drop(&mut self) {
         for (name, listener) in &self.listeners {
             let _ = self.canvas.remove_event_listener_with_callback(name, listener.as_ref().unchecked_ref());
