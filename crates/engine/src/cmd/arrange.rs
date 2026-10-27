@@ -562,7 +562,11 @@ pub(crate) fn resize_cmd(s: &mut Session, p: &Value) -> Result<Value> {
             n.child_layout.sizing_v = Sizing::Fixed;
         }
         if let NodeKind::Text(t) = &mut n.kind {
-            t.auto_resize = if num(p, "height").is_some() { TextAutoResize::None } else { TextAutoResize::Height };
+            if num(p, "height").is_some() {
+                t.fix_size(num(p, "width").is_some(), true);
+            } else if t.auto_resize != TextAutoResize::Truncate {
+                t.auto_resize = TextAutoResize::Height;
+            }
         }
         super::props::restore_worlds(doc, &kept)?;
     }

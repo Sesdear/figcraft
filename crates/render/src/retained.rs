@@ -45,6 +45,7 @@ struct Frame {
     outline_extras: crate::Outline,
     outlined: Vec<NodeId>,
     lod: bool,
+    magnified_image_pixels: bool,
     skip: Vec<NodeId>,
     solo: Option<NodeId>,
     background: Option<figcraft_color::Color>,
@@ -157,6 +158,7 @@ impl Retained {
             && !opts.outline.hidden
             && last.outlined == opts.outlined
             && last.lod == opts.lod
+            && last.magnified_image_pixels == opts.magnified_image_pixels
             && last.skip == opts.skip
             && last.solo == opts.solo
             && last.background == opts.background
@@ -202,6 +204,7 @@ impl Retained {
             outline_extras: opts.outline,
             outlined: opts.outlined.clone(),
             lod: opts.lod,
+            magnified_image_pixels: opts.magnified_image_pixels,
             skip: opts.skip.clone(),
             solo: opts.solo,
             background: opts.background,

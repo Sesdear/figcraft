@@ -310,3 +310,63 @@ fn new_text_starts_in_the_builds_default_font() {
         assert_eq!(serde_json::to_value(td).unwrap()["style"]["font_family"], figcraft_doc::DEFAULT_FONT);
     }
 }
+
+fn resize_mode(s: &Session, t: NodeId) -> figcraft_doc::TextAutoResize {
+    s.doc().unwrap().node(t).unwrap().kind.text().unwrap().auto_resize
+}
+
+#[test]
+fn a_truncated_text_keeps_truncating_when_its_box_is_resized() {
+    // #1376: a truncating text is already fixed both ways, so an explicit size changes its box only.
+    use figcraft_doc::TextAutoResize;
+    let mut s = Session::new();
+    let t = text(&mut s, "Lorem consectetur", json!({"textAutoResize": "truncate", "width": 100, "height": 24}));
+    assert_eq!(resize_mode(&s, t), TextAutoResize::Truncate);
+    for (cmd, p, why) in [
+        ("node.set", json!({"id": t, "props": {"height": 24}}), "node.set height (the value it has)"),
+        ("node.set", json!({"id": t, "props": {"width": 120, "height": 30}}), "node.set width and height"),
+        ("transform.resize", json!({"ids": [t], "height": 40}), "transform.resize height"),
+        ("transform.resize", json!({"ids": [t], "width": 90}), "transform.resize width"),
+        ("node.set", json!({"id": t, "props": {"sizingV": "fixed"}}), "fixed vertical sizing"),
+    ] {
+        s.execute(cmd, &p).unwrap();
+        assert_eq!(resize_mode(&s, t), TextAutoResize::Truncate, "{why}");
+    }
+    // Text that doesn't truncate still turns fixed size.
+    let plain = text(&mut s, "Lorem consectetur", json!({"textAutoResize": "height", "width": 100}));
+    s.execute("node.set", &json!({"id": plain, "props": {"height": 24}})).unwrap();
+    assert_eq!(resize_mode(&s, plain), TextAutoResize::None);
+}
+
+#[test]
+fn max_lines_on_auto_height_text_hugs_that_many_lines() {
+    // #1377: an auto-height text with max lines grows up to that many lines and ends in an
+    // ellipsis; the layer reports its max lines.
+    use figcraft_doc::TextAutoResize;
+    figcraft_text::scan_system_fonts();
+    let mut s = Session::new();
+    let t = text(&mut s, "Lorem ipsum dolor sit amet consectetur", json!({"fontSize": 16, "lineHeight": 24}));
+    s.execute("node.set", &json!({"id": t, "props": {"textAutoResize": "height", "width": 100}})).unwrap();
+    assert!(crate::inspect::node_json(s.doc().unwrap(), t, 0).get("maxLines").is_none(), "no limit: not reported");
+    // Wrapping needs a font (CI may have none).
+    if size(&s, t).1 < 48.0 {
+        return;
+    }
+    s.execute("text.maxLines", &json!({"ids": [t], "lines": 1})).unwrap();
+    assert_eq!(resize_mode(&s, t), TextAutoResize::Height, "max lines keep auto height");
+    assert_eq!(size(&s, t), (100.0, 24.0), "one line tall");
+    assert_eq!(crate::inspect::node_json(s.doc().unwrap(), t, 0)["maxLines"], json!(1));
+    s.execute("node.set", &json!({"id": t, "props": {"maxLines": 2}})).unwrap();
+    assert_eq!(size(&s, t).1, 48.0, "two lines tall");
+    // No limit: it grows to all of its lines again.
+    s.execute("node.set", &json!({"id": t, "props": {"maxLines": 0}})).unwrap();
+    assert!(size(&s, t).1 > 48.0);
+    // An explicit height on a text that truncates makes a truncating box.
+    s.execute("node.set", &json!({"id": t, "props": {"maxLines": 1}})).unwrap();
+    s.execute("node.set", &json!({"id": t, "props": {"height": 30}})).unwrap();
+    assert_eq!((resize_mode(&s, t), size(&s, t).1), (TextAutoResize::Truncate, 30.0));
+    // Other text still becomes a truncating box with max lines.
+    let fixed = text(&mut s, "Lorem", json!({"textAutoResize": "none", "width": 100, "height": 100}));
+    s.execute("text.maxLines", &json!({"ids": [fixed], "lines": 2})).unwrap();
+    assert_eq!(resize_mode(&s, fixed), TextAutoResize::Truncate);
+}

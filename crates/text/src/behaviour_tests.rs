@@ -163,6 +163,44 @@ fn resizing_auto_width_auto_height_fixed_and_truncate() {
 }
 
 #[test]
+fn truncation_fills_the_last_line_before_the_ellipsis() {
+    // #1375: as with CSS `text-overflow: ellipsis`, the last line shown takes as much of the word
+    // wrapped after it as fits before the ellipsis ("Lorem consec…", not "Lorem…").
+    if face().is_none() {
+        return;
+    }
+    let s = "Lorem consectetur";
+    let full = layout(&text(s, TextAutoResize::WidthAndHeight), None, None);
+    let lorem = layout(&text("Lorem", TextAutoResize::WidthAndHeight), None, None).width;
+    // Room for "Lorem" and most of the next word, not all of it.
+    let w = lorem + (full.width - lorem) * 0.75;
+    let line_h = full.lines[0].height;
+    let mut max_one = text(s, TextAutoResize::Truncate);
+    max_one.max_lines = 1;
+    let mut hug_one = text(s, TextAutoResize::Height);
+    hug_one.max_lines = 1;
+    for (l, why) in [
+        (layout(&text(s, TextAutoResize::Truncate), Some(w), Some(line_h + 1.0)), "cut by the box height"),
+        (layout(&max_one, Some(w), Some(1000.0)), "cut by max lines"),
+        (layout(&hug_one, Some(w), None), "auto height with max lines"),
+    ] {
+        assert!(l.truncated && l.lines.len() == 1, "{why}");
+        let last = l.glyphs.last().unwrap();
+        assert_eq!(last.char_start, last.char_end, "{why}: the ellipsis ends the line");
+        assert!(l.glyphs.iter().any(|g| g.char_start == 6), "{why}: the wrapped word starts on the line");
+        assert!(l.glyphs.iter().all(|g| g.x + g.advance <= w + EPS), "{why}: within the box");
+        assert!((l.height - line_h).abs() < EPS, "{why}: one line tall");
+        let g7 = l.glyphs.iter().find(|g| g.char_start == 7).unwrap();
+        assert_eq!(l.caret(7), (g7.x, 0), "{why}: a caret reaches the chars taken from the next line");
+    }
+    // A line that ends its paragraph keeps its words; the ellipsis follows them.
+    let mut para = text("Lorem\nconsectetur", TextAutoResize::Truncate);
+    para.max_lines = 1;
+    let l = layout(&para, Some(w), Some(1000.0));
+    assert!(l.truncated && l.glyphs.iter().all(|g| g.char_start < 5 || g.char_start == g.char_end));
+}
+
+#[test]
 fn vertical_trim_cap_height_to_baseline() {
     let Some(f) = face() else { return };
     let k = 20.0 / f.upem;

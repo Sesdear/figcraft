@@ -6,22 +6,10 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod a11y;
-pub mod assets_panel;
 pub mod bidi;
-pub mod board_bar;
-pub mod board_facilitate;
-mod board_picker;
-pub mod branch_ui;
 pub mod canvas;
 pub mod cjk;
-pub mod colorpicker;
-pub mod comments;
-pub mod component_panel;
 pub mod control;
-pub mod credits;
-pub mod cursors;
-pub mod dev_compare;
-pub mod dev_mode;
 pub mod dialogs;
 pub mod export_panel;
 pub mod field_math;
@@ -33,45 +21,17 @@ pub mod frame_stats;
 pub mod guides;
 pub mod handles;
 pub mod home;
-pub mod home_recents;
 pub mod i18n;
 pub mod icons;
-pub mod import_report;
-pub mod layers;
-pub mod layout_panel;
-pub mod list_drag;
 pub mod live;
-pub mod live_text;
-pub mod measure_overlay;
 pub mod menus;
-pub mod missing_fonts;
-pub mod online;
 pub mod pending_open;
-pub mod plugins_ui;
 pub mod present;
-pub mod proto_canvas;
-pub mod proto_editor;
-pub mod proto_panel;
-pub mod render_worker;
-pub mod right;
-pub mod scale_panel;
-pub mod section_panel;
-pub mod selection_colors;
-mod selection_spacing;
 pub mod shortcuts;
-pub mod shortcuts_panel;
-pub mod style_picker;
 pub mod tabs;
 pub mod theme;
 pub mod toolbar;
-pub mod typography;
 pub mod ui_scale;
-pub mod updates_ui;
-pub mod variable_ui;
-pub mod variables_panel;
-pub mod vector_panel;
-pub mod versions;
-pub mod widget_bar;
 pub mod widgets;
 pub mod windows;
 
@@ -106,6 +66,8 @@ mod colorpicker_selection_tests;
 mod comments_tests;
 #[cfg(test)]
 mod component_props_reorder_tests;
+#[cfg(test)]
+mod component_swap_default_tests;
 #[cfg(test)]
 mod context_menu_tests;
 #[cfg(test)]
@@ -192,6 +154,7 @@ mod panel_remove_tests;
 mod panel_reorder_tests;
 #[cfg(test)]
 mod panel_width_tests;
+mod panels;
 #[cfg(test)]
 mod paste_image_tests;
 #[cfg(test)]
@@ -260,6 +223,54 @@ mod web_save_tests;
 mod windows_qa_tests;
 #[cfg(test)]
 mod windows_tests;
+pub use canvas::board_bar;
+pub use canvas::board_facilitate;
+pub use canvas::comments;
+pub use canvas::cursors;
+pub use canvas::frame_labels;
+pub use canvas::frame_stats;
+pub use canvas::guides;
+pub use canvas::handles;
+pub use canvas::live_text;
+pub use canvas::measure_overlay;
+pub use canvas::proto_canvas;
+pub use canvas::render_worker;
+use canvas::selection_spacing;
+pub use canvas::widget_bar;
+pub use dialogs::branch_ui;
+pub use dialogs::credits;
+pub use dialogs::import_report;
+pub use dialogs::missing_fonts;
+pub use dialogs::plugins_ui;
+pub use dialogs::updates_ui;
+pub use dialogs::variables_panel;
+pub use home::home_recents;
+pub use home::online;
+pub use panels::assets_panel;
+pub use panels::component_panel;
+pub use panels::dev_compare;
+pub use panels::dev_mode;
+pub use panels::export_panel;
+pub use panels::frame_presets;
+pub use panels::layers;
+pub use panels::layout_panel;
+pub use panels::list_drag;
+pub use panels::proto_editor;
+pub use panels::proto_panel;
+pub use panels::right;
+pub use panels::scale_panel;
+pub use panels::section_panel;
+pub use panels::selection_colors;
+pub use panels::shortcuts_panel;
+pub use panels::typography;
+pub use panels::variable_ui;
+pub use panels::vector_panel;
+pub use panels::versions;
+use widgets::board_picker;
+pub use widgets::colorpicker;
+pub use widgets::field_math;
+pub use widgets::font_preview;
+pub use widgets::style_picker;
 
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -275,125 +286,20 @@ use serde_json::{Value, json};
 
 pub use control::{ControlReply, ControlRequest, RequestGate, RequestState};
 
-/// Platform services the app crate provides (file dialogs, clipboard, URLs).
-pub trait Services {
-    fn pick_open(&mut self, _title: &str, _exts: &[&str]) -> DialogFuture {
-        Box::pin(std::future::ready(None))
-    }
-    /// Pick a file and read it, where the platform hands over a file's name and contents rather
-    /// than a path to it (the browser). `None`: the platform picks paths ([`Services::pick_open`]).
-    fn pick_open_contents(&mut self, _title: &str, _exts: &[&str]) -> Option<ContentsFuture> {
-        None
-    }
-    fn pick_save(&mut self, _title: &str, _name: &str, _exts: &[&str]) -> DialogFuture {
-        Box::pin(std::future::ready(None))
-    }
-    /// The platform saves files by handing them over as downloads (the browser), not through
-    /// save dialogs.
-    fn downloads(&self) -> bool {
-        false
-    }
-    /// Hand `bytes` over as a download named `name`; false when nothing was delivered.
-    fn download(&mut self, _name: &str, _bytes: &[u8]) -> bool {
-        false
-    }
-    /// A folder to write several files into.
-    fn pick_folder(&mut self, _title: &str) -> DialogFuture {
-        Box::pin(std::future::ready(None))
-    }
-    fn clipboard_set_text(&mut self, _s: &str) {}
-    /// Give native services access to the window context for platform clipboard output.
-    fn set_egui_context(&mut self, _ctx: &egui::Context) {}
-    fn clipboard_get_text(&mut self) -> Option<String> {
-        None
-    }
-    fn clipboard_get_html(&mut self) -> Option<String> {
-        None
-    }
-    fn clipboard_set_png(&mut self, _w: u32, _h: u32, _rgba: &[u8]) {}
-    /// An image on the system clipboard as (width, height, straight RGBA).
-    fn clipboard_get_image(&mut self) -> Option<(u32, u32, Vec<u8>)> {
-        None
-    }
-    fn open_url(&mut self, _url: &str) {}
-    /// Show the file at `path` in the platform's file manager (Finder, Explorer), selected where the
-    /// platform can.
-    fn reveal_path(&mut self, _path: &std::path::Path) {}
-    /// The system asks for reduced motion (its accessibility setting).
-    fn reduce_motion(&self) -> bool {
-        false
-    }
-    /// The system asks for the dark interface (the freedesktop colour scheme): for platforms whose
-    /// windowing stack doesn't report a theme (winit gives none on Linux and the BSDs).
-    fn system_dark(&self) -> Option<bool> {
-        None
-    }
-    /// After a panic in a frame: keep recovery copies of unsaved files.
-    fn emergency_save(&mut self, _session: &Session) {}
-    /// Keep the preferences now (the installed plugins or their settings changed), as the app
-    /// does when it quits.
-    fn save_prefs(&mut self, _prefs: &figcraft_engine::Prefs) {}
-    /// The OS or browser language as a tag ("es-ES"), for the "system" language preference.
-    fn system_language(&self) -> Option<String> {
-        None
-    }
-    /// The controller buttons held now on any controller: bit i is standard gamepad layout index i
-    /// (0 the bottom face button … 16 home; `figcraft_doc::proto::GAMEPAD_BUTTONS`). The prototype
-    /// player asks every frame while its prototype has gamepad triggers.
-    fn gamepad_held(&mut self) -> u32 {
-        0
-    }
-}
+mod app;
+mod clock;
+mod open;
+mod services;
+mod state;
 
-pub type DialogFuture = Pin<Box<dyn Future<Output = Option<PathBuf>>>>;
-/// A picked file's name and contents ([`Services::pick_open_contents`]); `None` when the picker
-/// was cancelled, `Err` with what to tell the user when the file couldn't be read.
-pub type ContentsFuture = Pin<Box<dyn Future<Output = Option<Result<(String, Vec<u8>), String>>>>>;
-/// A dropped file's contents, read once they arrive (`Err`: what to tell the user when they
-/// couldn't be read).
-pub type ReadFuture = Pin<Box<dyn Future<Output = Result<Vec<u8>, String>>>>;
-type PickFuture = Pin<Box<dyn Future<Output = Option<Picked>>>>;
-type DialogDone = Box<dyn FnOnce(&mut FigApp, Picked)>;
-
-/// What a dialog picked: a path, or a file's name and contents where there are no paths, or why
-/// the picked file couldn't be read.
-enum Picked {
-    Path(PathBuf),
-    Contents(String, Vec<u8>),
-    Unreadable(String),
-}
-
-impl Picked {
-    /// The file as `file.open` and `file.import` take it (`Err`: what to tell the user instead).
-    fn file_params(self) -> Result<Value, String> {
-        match self {
-            Picked::Path(p) => Ok(json!({"path": p.to_string_lossy()})),
-            Picked::Contents(name, bytes) => {
-                use base64::Engine as _;
-                Ok(json!({"data": base64::engine::general_purpose::STANDARD.encode(&bytes), "name": name}))
-            }
-            Picked::Unreadable(why) => Err(why),
-        }
-    }
-}
-
-/// What the user is told about a file whose contents couldn't be read.
-pub fn unreadable(name: &str) -> String {
-    i18n::trf("Couldn't read {name}.", &[("name", &name)])
-}
-
-/// The largest file read in the browser: wasm has at most 4 GiB of memory, and a file's contents
-/// are held about three times on their way to `file.open` (the bytes, base64, decoded again).
-/// As large as one member of a `.figcraft` file may be.
-const MAX_BROWSER_FILE: f64 = (512u64 << 20) as f64;
-
-/// Checks a file of `size` bytes before the browser reads it (`Err`: what to tell the user).
-pub fn browser_can_read(name: &str, size: f64) -> Result<(), String> {
-    if size.is_nan() || size > MAX_BROWSER_FILE {
-        return Err(i18n::trf("{name} is too large to open in the browser (over 512 MB).", &[("name", &name)]));
-    }
-    Ok(())
-}
+pub(crate) use clock::repaint_in;
+pub use clock::{AUTO_SAVE_SECS, AUTOSAVE_SECS, FrameClock, ToastClock};
+pub(crate) use open::{drop_overlay, dropped_bytes, is_document, opens};
+pub use services::{ContentsFuture, DialogFuture, NoServices, ReadFuture, Services, browser_can_read, egui_copy_png, egui_copy_text, unreadable};
+use services::{DialogDone, PickFuture, Picked, RepaintWaker};
+pub use state::{
+    AutoSaveEncoding, CANVAS_MIN, LEFT_PANEL, LeftTab, MobilePanel, NARROW_WIDTH, PANEL_DEFAULT, RIGHT_PANEL, RightTab, TitleBar, fit_panels,
+};
 
 /// A native dialog in flight. The app keeps working while it is open, so its result goes to the
 /// file and window it was opened for, not to whichever is in front when it closes.
@@ -406,147 +312,6 @@ struct PendingDialog {
     doc: Option<u64>,
     /// The window it was opened from.
     window: u64,
-}
-
-/// Wakes the main window, which hands the result on to the window it belongs to.
-struct RepaintWaker(egui::Context);
-impl Wake for RepaintWaker {
-    fn wake(self: Arc<Self>) {
-        self.0.request_repaint_of(egui::ViewportId::ROOT);
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        self.0.request_repaint_of(egui::ViewportId::ROOT);
-    }
-}
-
-/// No-op services (tests, headless screenshots).
-pub struct NoServices;
-impl Services for NoServices {}
-
-/// Put `text` on the system clipboard through egui's platform output. Native integrations handle
-/// it directly; the browser shell writes it while handling the copy event.
-pub fn egui_copy_text(ctx: &egui::Context, text: &str) {
-    ctx.copy_text(text.to_string());
-}
-
-/// Put a straight-RGBA image on the system clipboard through egui's output (see
-/// [`egui_copy_text`]); a buffer that doesn't match its size is dropped.
-pub fn egui_copy_png(ctx: &egui::Context, w: u32, h: u32, rgba: &[u8]) {
-    let (w, h) = (w as usize, h as usize);
-    if w.checked_mul(h).and_then(|n| n.checked_mul(4)) != Some(rgba.len()) {
-        return;
-    }
-    ctx.copy_image(egui::ColorImage::from_rgba_unmultiplied([w, h], rgba));
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub enum RightTab {
-    Design,
-    Prototype,
-    Inspect,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub enum LeftTab {
-    File,
-    Assets,
-}
-
-/// The window's title bar.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum TitleBar {
-    /// The system draws it (and the browser): the tab strip sits below.
-    #[default]
-    Native,
-    /// A frameless window: the tab strip is the title bar, with our own window buttons and edges.
-    Custom,
-    /// macOS: the system's window buttons inset at the left of the tab strip.
-    Inset,
-}
-
-/// How often open documents get an autosave checkpoint (seconds).
-pub const AUTOSAVE_SECS: f64 = 30.0 * 60.0;
-
-/// Most changed layers whose names are checked for CJK scripts one by one (beyond: all of them).
-const CJK_CHANGES: usize = 10_000;
-
-/// With auto-save on: how long after a file last changed it is saved, and how long a failed save
-/// waits before trying again (seconds).
-pub const AUTO_SAVE_SECS: f64 = 3.0;
-const AUTO_SAVE_RETRY_SECS: f64 = 60.0;
-
-/// A file being encoded for auto-save: its snapshot and, once done, its bytes.
-pub type AutoSaveEncoding = std::thread::JoinHandle<(figcraft_engine::cmd::file::FileSnapshot, figcraft_engine::Result<Vec<u8>>)>;
-
-/// How long a toast shows (seconds).
-const TOAST_SECS: f64 = 3.0;
-
-/// How long a toast has been showing ([`UiState::toast`]).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ToastClock {
-    /// Raised, not drawn yet.
-    Raised,
-    /// Drawn once; the next frame starts the clock.
-    Drawn,
-    /// Showing since this time (UI clock, seconds).
-    Since(f64),
-}
-
-/// Draw another frame `secs` from now (nothing else needs drawing until then: an idle window draws
-/// no frames).
-#[track_caller]
-pub(crate) fn repaint_in(ctx: &egui::Context, secs: f64) {
-    if secs.is_finite() {
-        ctx.request_repaint_after(std::time::Duration::from_secs_f64(secs.max(0.0)));
-    }
-}
-
-/// A monotonic clock for background work (autosave, recovery, capture deadlines).
-///
-/// `Context::input(|i| i.time)` is the UI pass's time and is stale in `run_logic`; wall-clock time
-/// can jump. `web_time::Instant` is monotonic on native and in the browser. Tests drive deadlines
-/// directly with [`FrameClock::set_test_now`].
-pub struct FrameClock {
-    origin: web_time::Instant,
-    test_now: Option<f64>,
-}
-
-impl Default for FrameClock {
-    /// Start the frame clock at the current web time with no injected test time.
-    fn default() -> Self {
-        Self { origin: web_time::Instant::now(), test_now: None }
-    }
-}
-
-impl FrameClock {
-    /// Seconds since the app started (or the injected test time).
-    pub fn now(&self) -> f64 {
-        self.test_now.unwrap_or_else(|| self.origin.elapsed().as_secs_f64())
-    }
-
-    /// Set a fake monotonic time (tests); `None` returns to the real clock.
-    pub fn set_test_now(&mut self, secs: Option<f64>) {
-        self.test_now = secs;
-    }
-}
-
-/// The side panels' widths: the least and most a drag of their edge gives, what a double-click on
-/// the edge puts back, and how much of the window they leave the canvas.
-pub const LEFT_PANEL: std::ops::RangeInclusive<f32> = 200.0..=480.0;
-pub const RIGHT_PANEL: std::ops::RangeInclusive<f32> = 240.0..=480.0;
-pub const PANEL_DEFAULT: f32 = 240.0;
-/// Windows narrower than this (logical points: phones, portrait tablets) show one side panel at a
-/// time over the canvas, opened from two buttons, instead of both beside it.
-pub const NARROW_WIDTH: f32 = 760.0;
-/// What an open side panel leaves of a narrow window: the column of panel buttons.
-const MOBILE_STRIP: f32 = 48.0;
-
-/// The side panel a narrow window shows.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum MobilePanel {
-    Left,
-    Right,
 }
 
 impl UiState {
@@ -563,21 +328,6 @@ impl UiState {
             self.mobile_panel = None;
         }
     }
-}
-pub const CANVAS_MIN: f32 = 160.0;
-
-/// The widths the side panels are drawn at in `avail` points (the window less the icon rail), from
-/// the widths asked for (none while a panel is closed, which takes no room): each within its
-/// limits, and narrower in a small window so the canvas keeps [`CANVAS_MIN`] (the right panel
-/// gives way last).
-pub fn fit_panels(avail: f32, left: Option<f32>, right: Option<f32>) -> (f32, f32) {
-    let fit = |w: f32, range: &std::ops::RangeInclusive<f32>, room: f32| {
-        let w = if w.is_finite() { w } else { PANEL_DEFAULT };
-        w.clamp(*range.start(), room.clamp(*range.start(), *range.end()))
-    };
-    let left_min = left.map_or(0.0, |_| *LEFT_PANEL.start());
-    let right = right.map_or(0.0, |r| fit(r, &RIGHT_PANEL, avail - left_min - CANVAS_MIN));
-    (left.map_or(0.0, |l| fit(l, &LEFT_PANEL, avail - right - CANVAS_MIN)), right)
 }
 
 /// UI-only state (serialisable for `ui.inspect`).

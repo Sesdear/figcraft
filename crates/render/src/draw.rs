@@ -4,14 +4,14 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use figcraft_color::{BlendMode, Paint};
+use figcraft_color::{BlendMode, Paint, PaintKind};
 use figcraft_doc::{Document, EffectKind, Node, NodeId, NodeKind, StrokeAlign};
 use figcraft_geom::{Affine, BezPath, Rect, Shape};
-use tiny_skia::{FillRule, IntRect, Mask, MaskType, Pixmap, PixmapPaint, Transform};
+use tiny_skia::{FillRule, FilterQuality, IntRect, Mask, MaskType, Pixmap, PixmapPaint, Transform};
 
 use crate::backdrop::{self, Under};
 use crate::boolean::{PathCache, locked};
-use crate::paint::{composite, prepare_at, ts_blend};
+use crate::paint::{Prepared, composite, prepare_at, ts_blend};
 use crate::{blur, grain, lod, shadow};
 
 /// Shared state for one render.
@@ -30,6 +30,7 @@ pub struct Ctx<'a, 'd> {
     pub skip: &'a [NodeId],
     /// Approximate what's too small to see in detail (canvas previews; see [`crate::lod`]).
     pub lod: bool,
+    pub magnified_image_pixels: bool,
     /// The surfaces under the one being drawn into, when it is an isolated layer (for backdrops).
     pub under: Option<&'a Under<'a>>,
     /// Seconds into animated GIFs (0: their first frame; only the presenter plays them).
@@ -116,10 +117,21 @@ pub fn ts_path(p: &BezPath) -> Option<tiny_skia::Path> {
     b.finish()
 }
 
+const IMAGE_PIXELS_SHOWN_FROM_MAGNIFICATION: f64 = 2.0;
+
+fn pixels_when_magnified(prep: Prepared, device_scale: f64) -> Prepared {
+    let Prepared::Pattern { pixmap, mode, quality, opacity, transform } = prep else { return prep };
+    let image_scale = f64::from(transform.sx * transform.sy - transform.kx * transform.ky).abs().sqrt();
+    let magnification = device_scale * image_scale;
+    let quality = if magnification >= IMAGE_PIXELS_SHOWN_FROM_MAGNIFICATION { FilterQuality::Nearest } else { quality };
+    Prepared::Pattern { pixmap, mode, quality, opacity, transform }
+}
+
 fn fill_with(pix: &mut Pixmap, path: &tiny_skia::Path, paints: &[Paint], w: f64, h: f64, xf: Affine, rule: FillRule, ctx: &Ctx, mask: Option<&Mask>) {
     let scale = xf.determinant().abs().sqrt();
     for p in paints {
         let Some(prep) = prepare_at(p, w, h, scale, ctx.doc, ctx.time) else { continue };
+        let prep = if ctx.magnified_image_pixels && matches!(p.kind, PaintKind::Image(_)) { pixels_when_magnified(prep, scale) } else { prep };
         let paint = tiny_skia::Paint { shader: prep.shader(), anti_alias: true, blend_mode: ts_blend(p.blend), ..Default::default() };
         if p.blend == BlendMode::PlusDarker {
             // No tiny-skia mode: the paint alone over its pixels, then blended in.

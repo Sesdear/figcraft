@@ -52,6 +52,14 @@ pub fn start() {
                     let file_drag = FileDragBridge::new(canvas, cc.egui_ctx.clone())
                         .map_err(|e| std::io::Error::other(format!("couldn't listen for browser file drags: {e:?}")))?;
                     Ok(Box::new(WebShell { fig, file_drag }))
+                    // `?control`: `window.figcraft`, the page's control channel (crate::api), opt-in.
+                    if crate::query::control(&query()) {
+                        crate::api::connect(cc.egui_ctx.clone());
+                        if let Err(e) = crate::api::install() {
+                            log::error!("couldn't install window.figcraft: {e:?}");
+                        }
+                    }
+                    Ok(Box::new(WebShell { fig }))
                 }),
             )
             .await;
@@ -90,7 +98,9 @@ impl eframe::App for WebShell {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.fig.control_queue.extend(crate::api::take_requests());
         self.fig.ui(ui);
+        crate::api::poll_replies();
     }
 }
 
@@ -171,6 +181,9 @@ impl Services for WebServices {
     }
     /// A Blob behind a temporary `<a download>` link, clicked and removed.
     fn download(&mut self, name: &str, bytes: &[u8]) -> bool {
+        if crate::api::capture(name, bytes) {
+            return true;
+        }
         match download(name, bytes) {
             Ok(()) => true,
             Err(e) => {
