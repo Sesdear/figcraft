@@ -31,6 +31,9 @@ use crate::platform_impl::wayland::{make_wid, WindowId};
 
 const URI_LIST: &str = "text/uri-list";
 
+/// Allow thousands of local file URIs, but bound memory held by an untrusted drag source.
+const MAX_URI_LIST_BYTES: usize = 1024 * 1024;
+
 /// A file drag over one of our windows.
 #[derive(Debug)]
 pub struct FileDrag {
@@ -126,25 +129,20 @@ impl WinitState {
     }
 
     /// Reads the part of a seat's list that is ready, telling the loop whether to keep watching.
-    fn read_file_drag(&mut self, seat: &ObjectId, mut pipe: &File) -> PostAction {
+    fn read_file_drag(&mut self, seat: &ObjectId, pipe: &File) -> PostAction {
         let Some(drag) = self.seats.get_mut(seat).and_then(|seat| seat.file_drag.as_mut()) else {
             return PostAction::Remove;
         };
 
-        // The pipe is ready, so one read does not block.
-        let mut chunk = [0u8; 4096];
-        match pipe.read(&mut chunk) {
-            Ok(0) => {
+        match read_uri_list_chunk(pipe, &mut drag.buffer) {
+            Ok(true) => {
                 drag.reader = None;
                 drag.paths = Some(parse_uri_list(&drag.buffer));
                 drag.buffer = Vec::new();
                 self.advance_file_drag(seat);
                 PostAction::Remove
             },
-            Ok(read) => {
-                drag.buffer.extend_from_slice(&chunk[..read]);
-                PostAction::Continue
-            },
+            Ok(false) => PostAction::Continue,
             Err(error)
                 if matches!(error.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock) =>
             {
@@ -154,11 +152,29 @@ impl WinitState {
                 warn!("Failed to read a dragged file list: {error}");
                 drag.reader = None;
                 drag.paths = Some(Vec::new());
+                drag.buffer = Vec::new();
                 self.advance_file_drag(seat);
+                // Removing the event source also closes its pipe; do not keep watching a
+                // source whose URI list failed validation or exceeded the size limit.
                 PostAction::Remove
             },
         }
     }
+}
+
+/// Reads one ready chunk, returning true at EOF. Rejects oversized lists before growing the
+/// buffer; the caller handles this like a read error and removes the event-loop source.
+fn read_uri_list_chunk(mut pipe: impl Read, buffer: &mut Vec<u8>) -> std::io::Result<bool> {
+    let mut chunk = [0u8; 4096];
+    let read = pipe.read(&mut chunk)?;
+    if read == 0 {
+        return Ok(true);
+    }
+    if buffer.len().checked_add(read).map_or(true, |size| size > MAX_URI_LIST_BYTES) {
+        return Err(std::io::Error::new(ErrorKind::InvalidData, "dragged URI list exceeds 1 MiB"));
+    }
+    buffer.extend_from_slice(&chunk[..read]);
+    Ok(false)
 }
 
 impl DataDeviceHandler for WinitState {
@@ -408,16 +424,81 @@ fn file_uri_path(uri: &[u8]) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn uri_list_accepts_empty_and_boundary_sizes() {
+        for size in [0, MAX_URI_LIST_BYTES - 1, MAX_URI_LIST_BYTES] {
+            // Padding is a comment, so the exact-limit case still exercises URI parsing.
+            let mut input = b"file:///tmp/kept\n#".to_vec();
+            input.resize(size, b'x');
+            let mut pipe = input.as_slice();
+            let mut buffer = Vec::new();
+            while !read_uri_list_chunk(&mut pipe, &mut buffer).unwrap() {}
+            assert_eq!(buffer, input);
+            let expected = if size == 0 { Vec::new() } else { vec![PathBuf::from("/tmp/kept")] };
+            assert_eq!(parse_uri_list(&buffer), expected);
+        }
+    }
+
+    #[test]
+    fn uri_list_rejects_oversized_stream_without_appending_the_excess() {
+        for size in [MAX_URI_LIST_BYTES + 1, MAX_URI_LIST_BYTES + 4096] {
+            let input = vec![b'x'; size];
+            let mut pipe = input.as_slice();
+            let mut buffer = Vec::new();
+            loop {
+                let before = buffer.len();
+                match read_uri_list_chunk(&mut pipe, &mut buffer) {
+                    Ok(false) => assert!(buffer.len() <= MAX_URI_LIST_BYTES),
+                    Ok(true) => panic!("oversized input was accepted"),
+                    Err(error) => {
+                        assert_eq!(error.kind(), ErrorKind::InvalidData);
+                        assert_eq!(buffer.len(), before);
+                        assert_eq!(buffer.len(), MAX_URI_LIST_BYTES);
+                        break;
+                    },
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn uri_list_rejects_a_chunk_crossing_the_limit_atomically() {
+        let mut buffer = vec![b'x'; MAX_URI_LIST_BYTES - 1];
+        let before = buffer.clone();
+        let error = read_uri_list_chunk(&b"ab"[..], &mut buffer).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+        assert_eq!(buffer, before);
+    }
+
+    #[test]
+    fn uri_list_preserves_read_errors_without_appending() {
+        struct FailedRead(ErrorKind);
+        impl Read for FailedRead {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from(self.0))
+            }
+        }
+        for kind in [ErrorKind::Interrupted, ErrorKind::WouldBlock, ErrorKind::BrokenPipe] {
+            let mut buffer = b"file:///tmp/kept\n".to_vec();
+            let before = buffer.clone();
+            assert_eq!(
+                read_uri_list_chunk(FailedRead(kind), &mut buffer).unwrap_err().kind(),
+                kind
+            );
+            assert_eq!(buffer, before);
+        }
+    }
+
     fn paths(list: &str) -> Vec<PathBuf> {
         parse_uri_list(list.as_bytes())
     }
 
     #[test]
     fn reads_file_uris() {
-        assert_eq!(paths("file:///home/me/a.txt\r\nfile:///tmp/b%20c.png\r\n"), [
-            PathBuf::from("/home/me/a.txt"),
-            PathBuf::from("/tmp/b c.png")
-        ]);
+        assert_eq!(
+            paths("file:///home/me/a.txt\r\nfile:///tmp/b%20c.png\r\n"),
+            [PathBuf::from("/home/me/a.txt"), PathBuf::from("/tmp/b c.png")]
+        );
     }
 
     #[test]
@@ -435,10 +516,10 @@ mod tests {
 
     #[test]
     fn accepts_localhost_and_skips_other_hosts() {
-        assert_eq!(paths("file://localhost/a\r\nfile://LOCALHOST/b\r\nfile://elsewhere/c\r\n"), [
-            PathBuf::from("/a"),
-            PathBuf::from("/b")
-        ]);
+        assert_eq!(
+            paths("file://localhost/a\r\nfile://LOCALHOST/b\r\nfile://elsewhere/c\r\n"),
+            [PathBuf::from("/a"), PathBuf::from("/b")]
+        );
     }
 
     #[test]

@@ -13,6 +13,7 @@ pub(crate) fn position(client: [f64; 2], origin: [f64; 2], zoom: f32) -> Option<
     pos.is_finite().then_some(pos)
 }
 
+/// Browser drag lifecycle events used to track file gestures independently of file reads.
 #[derive(Clone, Copy)]
 pub(crate) enum Phase {
     Enter,
@@ -22,6 +23,7 @@ pub(crate) enum Phase {
     Cancel,
 }
 
+/// Pending pointer and hover corrections applied when eframe next consumes browser input.
 #[derive(Default)]
 pub(crate) struct FileDrag {
     active: bool,

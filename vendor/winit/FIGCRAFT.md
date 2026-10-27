@@ -21,6 +21,8 @@ does not add a public API or enqueue files a second time: it emits the existing
 
 - **Wayland:** retain the surface-local logical drag point through asynchronous URI
   reading, convert using the window's current scale, and replay it before delivery.
+  URI lists are limited to 1 MiB; oversized lists follow the read-error path,
+  releasing the buffer, completing with no files and removing the pipe reader.
 - **X11:** unpack signed root pixels and translate into client pixels. Keep one URI
   conversion in flight. Give each transfer a temporary unmapped requestor window,
   so canceled replies cannot overwrite a later transfer's property. Validate the
@@ -46,13 +48,16 @@ From the FigCraft workspace, run:
 CARGO_TARGET_DIR="$PWD/target" cargo test --manifest-path vendor/winit/Cargo.toml --test file_drop_patches
 CARGO_TARGET_DIR="$PWD/target" cargo test --manifest-path vendor/winit/Cargo.toml --lib file_drop_position
 CARGO_TARGET_DIR="$PWD/target" cargo test --manifest-path vendor/winit/Cargo.toml --lib file_drop_state
+CARGO_TARGET_DIR="$PWD/target" cargo test --manifest-path vendor/winit/Cargo.toml --lib dnd::tests
 ```
 
 The tests execute shared coordinate conversions and the pure X11 transfer state,
 including both URI/drop orderings, frozen coordinates, duplicate delivery and
 canceled/unrelated replies. Source guards cover callback ordering/ABI, following
-the fork's existing patch-test convention. They do not replace native OS drag
-tests or cross-platform compilation. A FigCraft X11 XDND smoke run on 2026-10-27
+the fork's existing patch-test convention, and Wayland read-error cleanup. Wayland
+unit tests cover URI parsing, exact size boundaries, oversized streams and read
+errors. They do not replace native OS drag tests or cross-platform compilation.
+A FigCraft X11 XDND smoke run on 2026-10-27
 verified hover/cancel, multi-file delivery, fast Drop before the URI reply and
 Zoom/Pan placement, with screenshots inspected. Wayland, Windows and macOS gestures
 have not been run for this patch. Temporary X11 requestor windows are destroyed

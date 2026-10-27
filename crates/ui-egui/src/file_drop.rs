@@ -69,6 +69,8 @@ pub(crate) fn canvas(app: &mut FigApp, ctx: &Context) {
     }
 }
 
+/// Checks hover metadata, accepting inconclusive browser MIME types until the dropped file can
+/// be checked by name and parsed. Browser drags do not expose names until release.
 fn hover_supported(file: &egui::HoveredFile) -> bool {
     if let Some(path) = &file.path {
         return crate::opens(path);

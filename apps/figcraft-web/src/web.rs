@@ -9,6 +9,7 @@ use crate::file_drag::{FileDrag, Phase};
 const CANVAS_ID: &str = "figcraft_canvas";
 const LOADING_ID: &str = "figcraft_loading";
 
+/// Starts the browser app, including file-drag listeners and the opt-in control channel.
 pub fn start() {
     eframe::WebLogger::init(log::LevelFilter::Info).ok();
     wasm_bindgen_futures::spawn_local(async {
@@ -51,7 +52,6 @@ pub fn start() {
                     }
                     let file_drag = FileDragBridge::new(canvas, cc.egui_ctx.clone())
                         .map_err(|e| std::io::Error::other(format!("couldn't listen for browser file drags: {e:?}")))?;
-                    Ok(Box::new(WebShell { fig, file_drag }))
                     // `?control`: `window.figcraft`, the page's control channel (crate::api), opt-in.
                     if crate::query::control(&query()) {
                         crate::api::connect(cc.egui_ctx.clone());
@@ -59,7 +59,7 @@ pub fn start() {
                             log::error!("couldn't install window.figcraft: {e:?}");
                         }
                     }
-                    Ok(Box::new(WebShell { fig }))
+                    Ok(Box::new(WebShell { fig, file_drag }))
                 }),
             )
             .await;
@@ -113,6 +113,8 @@ struct FileDragBridge {
 }
 
 impl FileDragBridge {
+    /// Registers pointer listeners without taking file reads away from eframe.
+    /// If registration fails, dropping the partial bridge removes earlier listeners.
     fn new(canvas: web_sys::HtmlCanvasElement, ctx: egui::Context) -> Result<Self, wasm_bindgen::JsValue> {
         let mut bridge = Self { canvas, state: Default::default(), listeners: Vec::new() };
         for (name, phase) in

@@ -26,9 +26,13 @@ pub struct PendingOpen {
     pub read: Option<ReadFuture>,
 }
 
+/// Destination captured at drop time so asynchronous imports survive tab or page switches.
 pub struct ImportTarget {
+    /// Stable document identity, independent of its current tab index.
     pub uid: u64,
+    /// Page that received the drop; imports are cancelled if it no longer exists.
     pub page: NodeId,
+    /// Destination name displayed while the import is pending.
     pub name: String,
     /// One OS drop. Pending reads from later gestures must not share its layout or selection.
     pub batch: u64,
@@ -44,6 +48,9 @@ pub(crate) fn open_dropped(app: &mut FigApp, f: &egui::DroppedFileHandle) {
     app.ui.pending_opens.push(PendingOpen { label: name, params, command: "file.open", target: None, read });
 }
 
+/// Imports into the captured destination, restoring the active tab and any temporarily changed page.
+/// When visiting another page, preserve the selection that was on the destination's prior page.
+/// A closed document or removed page cancels the import rather than redirecting it.
 fn run_pending(app: &mut FigApp, pending: PendingOpen) -> Option<Value> {
     let target = match pending.target {
         Some(target) => target,

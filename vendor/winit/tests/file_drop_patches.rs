@@ -30,6 +30,23 @@ fn before(text: &str, first: &str, second: &str) {
 }
 
 #[test]
+fn wayland_failed_reads_release_the_buffer_and_remove_the_reader() {
+    let text = source("linux/wayland/seat/dnd.rs");
+    let read = section(&text, "fn read_file_drag", "fn read_uri_list_chunk");
+    assert!(read.contains("match read_uri_list_chunk(pipe, &mut drag.buffer)"));
+    let failure = read.rsplit_once("Err(error) => {").unwrap().1;
+    for cleanup in
+        ["drag.reader = None", "drag.paths = Some(Vec::new())", "drag.buffer = Vec::new()"]
+    {
+        before(failure, cleanup, "self.advance_file_drag(seat)");
+    }
+    before(failure, "self.advance_file_drag(seat)", "PostAction::Remove");
+    let transient = section(read, "if matches!(error.kind()", "Err(error) => {");
+    assert!(transient.contains("ErrorKind::Interrupted | ErrorKind::WouldBlock"));
+    assert!(transient.contains("PostAction::Continue"));
+}
+
+#[test]
 fn wayland_replays_saved_drop_point_after_async_uri_read() {
     let text = source("linux/wayland/seat/dnd.rs");
     let advance = section(&text, "fn advance_file_drag", "fn read_file_drag");
