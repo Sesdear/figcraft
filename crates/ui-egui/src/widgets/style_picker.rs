@@ -857,25 +857,26 @@ fn text_property_fields(ui: &mut Ui, doc: &Document, style: &Style, def: &TextSt
 
 /// The font menu: Apply variable, then the installed fonts. Picking a font keeps its style when the
 /// family has one, else falls back to Regular or the first style.
-fn font_family_menu(id: &str, def: &TextStyle, family_resp: &Response, out: &mut Frame) {
-    crate::right::menu_popup(family_resp).width(260.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-        if crate::right::menu_item(ui, tr("Apply variable"), "") {
+fn font_family_menu(ui: &Ui, id: &str, def: &TextStyle, family_resp: &Response, out: &mut Frame) {
+    let apply_variable = |ui: &mut Ui| {
+        let picked = crate::right::menu_item(ui, tr("Apply variable"), "");
+        if picked {
             crate::variable_ui::open_style(ui, id, "fontFamily", VariableType::String, family_resp.rect.left_bottom());
             ui.close();
-            return;
+        } else {
+            ui.separator();
         }
-        ui.separator();
-        if let Some(f) = crate::typography::font_picker(ui, Some(&def.font_family), family_resp.clicked()).picked {
-            set_text(def, id, out, |d| {
-                d.font_family = f.clone();
-                let styles = figcraft_text::family_styles(&f);
-                if !styles.is_empty() && !styles.contains(&d.font_style) {
-                    d.set_font_style(styles.iter().find(|s| s.eq_ignore_ascii_case("Regular")).or(styles.first()).cloned().unwrap_or_default());
-                }
-            });
-            ui.close();
-        }
-    });
+        picked
+    };
+    if let Some(f) = crate::typography::font_picker(ui, family_resp, Some(&def.font_family), 260.0, apply_variable).and_then(|p| p.picked) {
+        set_text(def, id, out, |d| {
+            d.font_family = f.clone();
+            let styles = figcraft_text::family_styles(&f);
+            if !styles.is_empty() && !styles.contains(&d.font_style) {
+                d.set_font_style(styles.iter().find(|s| s.eq_ignore_ascii_case("Regular")).or(styles.first()).cloned().unwrap_or_default());
+            }
+        });
+    }
 }
 
 /// The font style menu: Apply variable, then the styles of the current font, the current one checked.
@@ -909,7 +910,7 @@ fn text_properties(ui: &mut Ui, doc: &Document, style: &Style, def: &TextStyle, 
     // The dropdowns' menus open outside the dark scope (they're regular popups).
     let (family_resp, style_resp) = crate::theme::on_dark(ui, |ui| text_property_fields(ui, doc, style, def, out));
     if let Some(family_resp) = family_resp {
-        font_family_menu(id, def, &family_resp, out);
+        font_family_menu(ui, id, def, &family_resp, out);
     }
     if let Some(sr) = style_resp {
         font_style_menu(id, def, &sr, out);

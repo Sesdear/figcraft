@@ -22,21 +22,17 @@ pub(super) fn font_rows(
     row(ui, 32.0, |ui| {
         let w = ui.available_width();
         let resp = font_dropdown(app, ui, ids, "fontFamily", family.as_deref(), w, editing);
-        menu_popup(&resp).width(w.max(240.0)).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-            if !editing && apply_variable_item(ui, ids, "fontFamily", &resp) {
-                return;
-            }
-            let pick = font_picker(ui, family.as_deref(), resp.clicked());
+        let before_search = |ui: &mut Ui| !editing && apply_variable_item(ui, ids, "fontFamily", &resp);
+        if let Some(pick) = font_picker(ui, &resp, family.as_deref(), w.max(240.0), before_search) {
             if let Some(f) = pick.picked {
                 remember_family(ui.ctx(), &f);
                 apply_style(app, "fontFamily", json!(f));
-                ui.close();
             } else if let Some(h) = pick.hovered.or(pick.highlighted) {
                 // The canvas shows the hovered family (or the one the arrow keys are on);
                 // closing without picking ends the preview.
                 app.preview_text(ui.ctx(), "text.style", text_style_params(ids, range, json!({"fontFamily": h})));
             }
-        });
+        }
     });
 
     // Style + size.

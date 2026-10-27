@@ -88,6 +88,7 @@ mod export_preview_tests;
 mod field_tests;
 #[cfg(test)]
 mod file_drop_tests;
+mod font_menu_regrow_tests;
 #[cfg(test)]
 mod frame_label_tests;
 #[cfg(test)]
