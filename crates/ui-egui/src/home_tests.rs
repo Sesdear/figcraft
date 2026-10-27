@@ -19,6 +19,18 @@ fn first_run() -> Ui {
     Ui::new(Session::empty())
 }
 
+/// Disk drops are read on a worker. Wait for completion, not a fixed number of fast test frames.
+fn finish_drops(u: &mut Ui) {
+    for _ in 0..400 {
+        u.frame(vec![]);
+        if u.app.ui.pending_opens.is_empty() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("dropped files did not finish loading");
+}
+
 fn shapes(u: &mut Ui) -> Vec<Shape> {
     flat(&u.frame_output(vec![]).shapes)
 }
@@ -530,7 +542,9 @@ impl egui::DroppedFile for Dropped {
 /// Drag `path` over the window (one frame: what it shows), then drop it (one frame).
 fn drop_file(u: &mut Ui, path: &std::path::Path) -> Vec<Shape> {
     let hovered = egui::HoveredFile { path: Some(path.to_path_buf()), mime: String::new() };
-    let hovering = flat(&u.frame_raw(egui::RawInput { hovered_files: vec![hovered], ..Default::default() }).shapes);
+    let pos = u.app.canvas.rect.center();
+    let events = if u.app.ui.home { vec![] } else { vec![Event::PointerMoved(pos)] };
+    let hovering = flat(&u.frame_raw(egui::RawInput { events, hovered_files: vec![hovered], ..Default::default() }).shapes);
     let file: egui::DroppedFileHandle = std::sync::Arc::new(Dropped(path.to_path_buf()));
     u.frame_raw(egui::RawInput { dropped_files: vec![file], ..Default::default() });
     hovering
@@ -692,7 +706,7 @@ fn dropping_a_native_file_on_canvas_keeps_its_receiving_document_after_tab_switc
     u.app.session.active = 1;
     assert_eq!(u.app.session.ds().unwrap().uid, other_uid, "the UI switched tabs while the card was displayed");
     assert_eq!(u.app.ui.pending_opens.len(), 1, "the switch happens before dispatch");
-    u.frame(vec![]);
+    finish_drops(&mut u);
 
     assert_eq!(u.app.session.ds().unwrap().uid, other_uid, "the user's active tab stays in front");
     let layers = |uid: u64| {
@@ -760,9 +774,7 @@ fn dropping_several_files_on_canvas_places_them_side_by_side() {
     let pos = u.app.canvas.rect.center();
     let files: Vec<egui::DroppedFileHandle> = paths.iter().map(|p| std::sync::Arc::new(Dropped(p.clone())) as egui::DroppedFileHandle).collect();
     u.frame_raw(egui::RawInput { events: vec![Event::PointerMoved(pos)], dropped_files: files, ..Default::default() });
-    for _ in 0..4 {
-        u.frame(vec![]);
-    }
+    finish_drops(&mut u);
     assert!(u.app.ui.pending_opens.is_empty());
     let doc = u.app.session.doc().unwrap();
     let page = u.app.session.page().unwrap();
@@ -806,7 +818,7 @@ fn canvas_import_uses_queued_page_and_restores_the_page_selected_while_waiting()
     u.app.session.execute("page.select", &json!({"id": second_page})).unwrap();
     u.app.session.execute("select.set", &json!({"ids": [second_page_shape]})).unwrap();
     u.app.session.active = 1;
-    u.frame(vec![]);
+    finish_drops(&mut u);
     let target_index = u.app.session.docs.iter().position(|doc| doc.uid == target_uid).unwrap();
     let imported = u.app.session.docs[target_index].doc.node(first_page).unwrap().children[0];
     let doc = &u.app.session.docs[target_index].doc;
@@ -849,6 +861,7 @@ fn queued_canvas_import_is_cancelled_if_its_page_is_deleted() {
     let other_before = u.app.session.docs.iter().find(|doc| doc.uid == other_uid).unwrap().doc.clone();
     u.app.ui.pending_open_frames = 2;
     crate::pending_open::pending_opens(&mut u.app, &u.ctx);
+    finish_drops(&mut u);
     assert_eq!(u.app.session.docs.iter().find(|doc| doc.uid == other_uid).unwrap().doc, other_before);
     let target = u.app.session.docs.iter().find(|doc| doc.uid == target_uid).unwrap();
     assert_eq!(target.doc.pages.len(), 1);
@@ -879,9 +892,7 @@ fn queued_canvas_import_is_cancelled_if_its_document_is_closed() {
     u.app.session.docs.remove(target_index);
     u.app.session.active = 0;
 
-    while !u.app.ui.pending_opens.is_empty() {
-        u.frame(vec![]);
-    }
+    finish_drops(&mut u);
     assert_eq!(u.app.session.docs.len(), 1);
     assert_eq!(u.app.session.ds().unwrap().uid, other_uid);
     assert_eq!(u.app.session.doc().unwrap(), other_before.as_ref());

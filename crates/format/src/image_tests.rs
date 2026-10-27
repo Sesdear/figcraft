@@ -1,5 +1,5 @@
-//! Images a native file can't give back: damaged or missing members are reported, not dropped
-//! without a word.
+//! Image imports validate pixels before registration; damaged or missing native-file members
+//! are reported, not dropped without a word.
 
 use std::io::Write;
 
@@ -20,6 +20,71 @@ fn doc_with_image() -> (Document, String) {
     d.create(p, NodeKind::Rectangle, "R", 0.0, 0.0, 10.0, 10.0).unwrap();
     let (hash, ..) = add_image(&mut d, png()).unwrap();
     (d, hash)
+}
+
+/// Change just a synthetic PNG's IHDR, including its checksum, without allocating its pixels.
+fn png_with_dimensions(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = png();
+    bytes[16..20].copy_from_slice(&width.to_be_bytes());
+    bytes[20..24].copy_from_slice(&height.to_be_bytes());
+    let mut crc = !0u32;
+    for byte in &bytes[12..29] {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ if crc & 1 == 0 { 0 } else { 0xedb8_8320 };
+        }
+    }
+    bytes[29..33].copy_from_slice(&(!crc).to_be_bytes());
+    bytes
+}
+
+#[test]
+fn image_import_preserves_each_supported_raster_format() {
+    use image::ImageFormat;
+    let mut doc = Document::new("Images");
+    let image = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2, 3, image::Rgb([9, 5, 1])));
+    for format in [ImageFormat::Png, ImageFormat::Jpeg, ImageFormat::WebP, ImageFormat::Gif, ImageFormat::Bmp, ImageFormat::Tiff] {
+        let mut bytes = Vec::new();
+        image.write_to(&mut std::io::Cursor::new(&mut bytes), format).unwrap();
+        let (hash, width, height) = add_image(&mut doc, bytes.clone()).unwrap();
+        assert_eq!((width, height), (2, 3), "{format:?}");
+        assert_eq!(hash, image_hash(&bytes), "{format:?}");
+        let stored = doc.images.get(&hash).unwrap();
+        assert_eq!((stored.width, stored.height), (2, 3), "{format:?}");
+        assert_eq!(stored.bytes.as_slice(), bytes, "{format:?}");
+    }
+}
+
+#[test]
+fn image_import_rejects_a_valid_header_with_corrupt_pixels_without_mutation() {
+    let (mut doc, original_hash) = doc_with_image();
+    let mut bytes = png();
+    let data = bytes.windows(4).position(|window| window == b"IDAT").unwrap() + 4;
+    bytes[data] ^= 0xff;
+    let dimensions = image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format().unwrap().into_dimensions().unwrap();
+    assert_eq!(dimensions, (2, 2), "a metadata-only check still accepts this image");
+    assert!(add_image(&mut doc, bytes).is_err());
+    assert_eq!(doc.images.len(), 1);
+    assert!(doc.images.contains_key(&original_hash));
+}
+
+#[test]
+fn image_import_rejects_zero_dimensions() {
+    let mut doc = Document::new("Images");
+    for (width, height) in [(0, 0), (0, 2), (2, 0)] {
+        assert!(add_image(&mut doc, png_with_dimensions(width, height)).is_err(), "{width}×{height}");
+        assert!(doc.images.is_empty());
+    }
+}
+
+#[test]
+fn image_import_rejects_oversized_pixels_from_the_header() {
+    let mut doc = Document::new("Images");
+    // RGBA8 at this size takes 1 GiB. The tiny fixture keeps its original 2×2-pixel payload:
+    // the size limit must reject it before decoding or allocating that claimed pixel buffer.
+    let error = add_image(&mut doc, png_with_dimensions(16_384, 16_384)).unwrap_err().to_string();
+    assert!(error.contains("too large") || error.contains("limit"), "{error}");
+    assert!(doc.images.is_empty());
 }
 
 /// The archive of `d` rebuilt with `edit` applied to each member (None drops it).

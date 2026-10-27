@@ -24,6 +24,8 @@
 #[cfg(target_arch = "wasm32")]
 mod api;
 #[cfg(any(target_arch = "wasm32", test))]
+mod file_drag;
+#[cfg(any(target_arch = "wasm32", test))]
 mod query;
 #[cfg(test)]
 mod query_tests;

@@ -30,6 +30,8 @@ pub struct ImportTarget {
     pub uid: u64,
     pub page: NodeId,
     pub name: String,
+    /// One OS drop. Pending reads from later gestures must not share its layout or selection.
+    pub batch: u64,
 }
 
 /// Queues dropped file `f` to open as a document of its own: by path, or by its contents when there
@@ -133,14 +135,24 @@ pub fn pending_opens(app: &mut FigApp, ctx: &egui::Context) {
         return;
     }
     ctx.request_repaint();
-    if app.ui.pending_open_frames >= FRAMES_BEFORE_OPENING && !reading {
+    // A live move/resize previews from its original snapshot. Importing into it would lose
+    // both the new layers and their undo entry on the next preview/cancel. Wait, don't end it.
+    let interacting = app
+        .ui
+        .pending_opens
+        .iter()
+        .filter_map(|p| p.target.as_ref())
+        .any(|target| app.session.docs.iter().any(|doc| doc.uid == target.uid && doc.interaction.is_some()));
+    if app.ui.pending_open_frames >= FRAMES_BEFORE_OPENING && !reading && !interacting {
         app.ui.pending_open_frames = 0;
-        // Files dropped together land side by side: each starts where the previous one ends.
-        let mut next_x: Option<f64> = None;
+        // Keep each gesture separate even when several asynchronous drops wait together.
+        let mut batches = std::collections::BTreeMap::<_, (Option<f64>, Vec<NodeId>)>::new();
         for mut pending in std::mem::take(&mut app.ui.pending_opens) {
             let command = pending.command;
             let canvas = command == "file.import" && pending.params.get("x").is_some();
-            if canvas && let Some(x) = next_x {
+            let batch = pending.target.as_ref().filter(|_| canvas).map(|t| (t.uid, t.page, t.batch));
+            let next_x = batch.and_then(|key| batches.get(&key).and_then(|b| b.0));
+            if let Some(x) = next_x {
                 pending.params["x"] = json!(x);
             }
             let page = pending.target.as_ref().map(|t| (t.uid, t.page));
@@ -148,12 +160,33 @@ pub fn pending_opens(app: &mut FigApp, ctx: &egui::Context) {
             if result.is_some() && command == "file.open" {
                 app.ui.home = false;
             }
-            if canvas {
-                let right = result.as_ref().and_then(|r| r.get("id")?.as_u64()).and_then(|id| {
+            if let Some(batch) = batch {
+                let id = result.as_ref().and_then(|r| r.get("id")?.as_u64()).map(NodeId);
+                let right = id.and_then(|id| {
                     let doc = &app.session.docs.iter().find(|d| Some(d.uid) == page.map(|p| p.0))?.doc;
-                    doc.world_bounds(NodeId(id)).map(|b| b.x1)
+                    doc.world_bounds(id).map(|b| b.x1)
                 });
-                next_x = right.map(|r| r + IMPORT_GAP).or(next_x);
+                let state = batches.entry(batch).or_default();
+                state.0 = right.filter(|r| r.is_finite()).map(|r| r + IMPORT_GAP).or(state.0);
+                if let Some(id) = id {
+                    state.1.push(id);
+                }
+            }
+        }
+        // Selection is a normal, non-undoable engine command. Never switch the user's page/tab
+        // back if they navigated while the data was being read.
+        for ((uid, page, batch), (_, ids)) in batches {
+            if !ids.is_empty() && app.session.docs.iter().any(|d| d.uid == uid && d.page == page) {
+                run_pending(
+                    app,
+                    PendingOpen {
+                        label: String::new(),
+                        params: json!({"ids": ids}),
+                        command: "select.set",
+                        target: Some(ImportTarget { uid, page, name: String::new(), batch }),
+                        read: None,
+                    },
+                );
             }
         }
         return;
