@@ -45,6 +45,8 @@ pub const FORMAT: &str = "figcraft";
 pub const VERSION: u32 = 1;
 /// Largest archive member we read (guards against zip bombs).
 const MAX_MEMBER: u64 = 512 * 1024 * 1024;
+/// Match the renderer's decoded-image budget; reject oversized headers before decoding pixels.
+const MAX_IMAGE_DECODED_BYTES: u64 = 512 << 20;
 /// `document.json` may unpack to [`DOCUMENT_RATIO`] times what it takes in the archive, within
 /// [`MAX_MEMBER`] and [`MAX_DOCUMENT`]: a large document saved by us (a 900 000-layer file packs
 /// 1.48 GB into 244 MB) opens again, while a small archive still can't unpack into gigabytes.
@@ -211,13 +213,30 @@ pub fn image_hash(bytes: &[u8]) -> String {
     d.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Register encoded image bytes with the document; returns the hash and pixel size.
+/// Check encoded image headers and register the original bytes, returning their hash and pixel size.
+///
+/// Encoded files and the decoder's advertised pixel allocation are limited to 512 MiB each.
+/// Pixel decoding, including detection of damaged pixel payloads, is deferred to the renderer:
+/// importing an image must not decode it once for validation and again for display. Animated
+/// images retain their encoded frames and use the first frame's dimensions.
 pub fn add_image(doc: &mut Document, bytes: Vec<u8>) -> Result<(String, u32, u32), FormatError> {
-    let (w, h) = image::ImageReader::new(std::io::Cursor::new(&bytes))
-        .with_guessed_format()
-        .map_err(|e| FormatError::Corrupt(e.to_string()))?
-        .into_dimensions()
-        .map_err(|e| FormatError::Corrupt(format!("unsupported image: {e}")))?;
+    use image::ImageDecoder;
+    if bytes.len() as u64 > MAX_MEMBER {
+        return Err(FormatError::Corrupt("image file is too large (maximum 512 MiB)".into()));
+    }
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format().map_err(|e| FormatError::Corrupt(e.to_string()))?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_IMAGE_DECODED_BYTES);
+    reader.limits(limits);
+    let decoder = reader.into_decoder().map_err(|e| FormatError::Corrupt(format!("unsupported image: {e}")))?;
+    let (w, h) = decoder.dimensions();
+    if w == 0 || h == 0 {
+        return Err(FormatError::Corrupt("image dimensions must be greater than zero".into()));
+    }
+    if decoder.total_bytes() > MAX_IMAGE_DECODED_BYTES {
+        return Err(FormatError::Corrupt("image is too large to decode (maximum 512 MiB of pixels)".into()));
+    }
+    drop(decoder);
     let hash = image_hash(&bytes);
     doc.images.insert(hash.clone(), ImageData { bytes: Arc::new(bytes), width: w, height: h });
     Ok((hash, w, h))

@@ -204,18 +204,8 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
             ds.zoom_to_fit();
         }
     }
+    crate::file_drop::canvas(app, &ctx);
     let own_cursor = input(app, ui, &resp);
-    // A browser names no dragged file until the drop, so documents there still say "import", or
-    // in Dev Mode show the Dev Mode note, though they open when dropped.
-    let documents = ctx.input(|i| i.raw.hovered_files.iter().all(|f| f.path.as_deref().is_some_and(crate::is_document)));
-    let label = if documents {
-        tr("Drop to open")
-    } else if app.ui.right_tab == crate::RightTab::Inspect {
-        tr("Dev Mode only inspects: switch to Design (Shift+D) to edit")
-    } else {
-        tr("Drop to import")
-    };
-    crate::drop_overlay(&ctx, ctx.content_rect(), label);
     crate::guides::end_released(&ctx);
     crate::live::track_pointer(app, &ctx);
     app.sync_preedit();

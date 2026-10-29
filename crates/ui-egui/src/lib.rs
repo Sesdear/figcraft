@@ -11,6 +11,7 @@ pub mod canvas;
 pub mod cjk;
 pub mod control;
 pub mod dialogs;
+mod file_drop;
 pub mod home;
 pub mod i18n;
 pub mod icons;
@@ -84,6 +85,8 @@ mod duplicate_paint_tests;
 mod export_preview_tests;
 #[cfg(test)]
 mod field_tests;
+#[cfg(test)]
+mod file_drop_tests;
 #[cfg(test)]
 mod font_menu_regrow_tests;
 #[cfg(test)]
@@ -296,13 +299,14 @@ pub use control::{ControlReply, ControlRequest, RequestGate, RequestState};
 
 mod app;
 mod clock;
+mod import_limits;
 mod open;
 mod services;
 mod state;
 
 pub(crate) use clock::repaint_in;
 pub use clock::{AUTO_SAVE_SECS, AUTOSAVE_SECS, FrameClock, ToastClock};
-pub(crate) use open::{drop_overlay, dropped_bytes, is_document, opens};
+pub(crate) use open::{drop_overlay, drop_overlay_allowed, is_document, opens};
 pub use services::{
     ContentsFuture, DialogFuture, MAX_CLIPBOARD_PNG_BYTES, NoServices, ReadFuture, Services, browser_can_read, egui_copy_png, egui_copy_text,
     unreadable,
@@ -684,6 +688,9 @@ pub(crate) struct PendingAck {
 /// The whole FigCraft UI.
 pub struct FigApp {
     pub session: Session,
+    /// Shared with Session.last_command across window swaps and closure: retained repeat input
+    /// keeps its reservation until another repeatable command replaces it.
+    pub(crate) repeat_import_memory: Option<import_limits::ImportLease>,
     pub ui: UiState,
     pub canvas: canvas::CanvasState,
     pub services: Box<dyn Services>,

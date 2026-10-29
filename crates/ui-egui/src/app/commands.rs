@@ -15,6 +15,11 @@ impl FigApp {
     pub fn run(&mut self, id: &str, params: Value) -> Option<Value> {
         let layers_generation = self.session.clipboard.layers_generation;
         let r = self.session.execute(id, &params);
+        // A new repeatable command replaces the retained import parameters. Keep their lease for
+        // edit.repeat itself, which intentionally preserves the original command and its data.
+        if r.is_ok() && id != "edit.repeat" && figcraft_engine::find_command(id).is_some_and(|spec| spec.history) {
+            self.repeat_import_memory = None;
+        }
         self.clear_comment_draft_after_tool_set(id, r.is_ok());
         self.handle_ui_requests();
         self.invalidate_synthetic_copy(layers_generation);

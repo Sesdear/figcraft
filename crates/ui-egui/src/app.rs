@@ -27,6 +27,7 @@ impl FigApp {
         Self {
             ui: UiState { left_width, right_width, pages_height, ..UiState::default() },
             session,
+            repeat_import_memory: None,
             canvas: canvas::CanvasState::default(),
             services,
             worker: None,
@@ -197,6 +198,7 @@ impl FigApp {
 
     /// One frame of the window drawing now.
     pub(crate) fn frame(&mut self, ui: &mut egui::Ui) {
+        crate::open::release_replaced_import(self);
         let ctx = ui.ctx().clone();
         // Bind this input batch before controls or pointer input can replace its composing
         // target/caret. Outgoing IME receipts run after mutation and cannot authorize it.

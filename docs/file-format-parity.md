@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-29 · **Change:** minor (SVG import draws each pattern tile once per scale, within the layer budget (#1080); a file's JPEG thumbnail can't crash the home screen (#1491's progressive JPEG check, now shared); `.fig` import: library text styles linked by asset key, and override rows restating a nested level (#1234); `.fig` import keeps the file's saved line breaks while the text and its box are unedited (#1236); Download a missing free font from the Missing fonts window (`font.download`, #754); offline Penpot 2.x import/export (#1143); `.sketch` import checked against Sketch's renders: master backgrounds, symbol clipping, tints before Sketch 64, mask opacity, bitmap fills, image overrides on shapes, stretching stacks, blur radii, colour adjustments, OKLab gradients, text growth, shape group borders (#1389); FigJam outer shape outlines and sticky body fallback beside author text (#1341, #1397); image member names are checked on read, and REST image placeholders get archive-safe keys (#1086); Android Vector Drawable (XML) export; `.fig` export: files the incumbent imports, with component set properties, and grid track sizes at its field ids; Save and auto-save don't replace changes another app made to the open file (#1330); `.sketch` import, best effort, Sketch 48 and newer; the PNG row names ignore overlapping layers and where include bounding box is offered; the Fonts table's missing-font row describes the Missing fonts window; `.figcraft` carries the file kind (boards); `.fig` import: resized instances and variable modes by asset key; atomic saves; auto-save; SVG export clip of nested frames; SVG/PDF export depth refusal (#208); `.fig` export: instance sizes, variables with modes, shared styles, variable-width strokes; `.fig` export: written files checked by opening them in other software; experimental `.fig` export; export and inspect behaviour suite and fixes; .fig import: editable vector networks and more layer kinds; embedded image colour profiles; `.fig` import, best effort; animated GIF fills and TIFF images; last major: created, formats from the installed Figma's Info.plist and help center, ours from source; REST import keeps slot layers and instances' slot content (#792); REST import reads grid track sizes (#465); `.fig` import fidelity from the community batches, budgets for large files, the import report, a `.fig` copy from Save as, paste from another design app; instance layers' size and resizing and Hug on import (#731, #732)) · **Target:** Figma Design (desktop app 126.10.7)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-29 · **Change:** minor (Canvas external file imports: native paths, bounded browser bytes and image-header validation without an extra full pixel decode; SVG import draws each pattern tile once per scale, within the layer budget (#1080); a file's JPEG thumbnail can't crash the home screen (#1491's progressive JPEG check, now shared); `.fig` import: library text styles linked by asset key, and override rows restating a nested level (#1234); `.fig` import keeps the file's saved line breaks while the text and its box are unedited (#1236); Download a missing free font from the Missing fonts window (`font.download`, #754); offline Penpot 2.x import/export (#1143); `.sketch` import checked against Sketch's renders: master backgrounds, symbol clipping, tints before Sketch 64, mask opacity, bitmap fills, image overrides on shapes, stretching stacks, blur radii, colour adjustments, OKLab gradients, text growth, shape group borders (#1389); FigJam outer shape outlines and sticky body fallback beside author text (#1341, #1397); image member names are checked on read, and REST image placeholders get archive-safe keys (#1086); Android Vector Drawable (XML) export; `.fig` export: files the incumbent imports, with component set properties, and grid track sizes at its field ids; Save and auto-save don't replace changes another app made to the open file (#1330); `.sketch` import, best effort, Sketch 48 and newer; the PNG row names ignore overlapping layers and where include bounding box is offered; the Fonts table's missing-font row describes the Missing fonts window; `.figcraft` carries the file kind (boards); `.fig` import: resized instances and variable modes by asset key; atomic saves; auto-save; SVG export clip of nested frames; SVG/PDF export depth refusal (#208); `.fig` export: instance sizes, variables with modes, shared styles, variable-width strokes; `.fig` export: written files checked by opening them in other software; experimental `.fig` export; export and inspect behaviour suite and fixes; .fig import: editable vector networks and more layer kinds; embedded image colour profiles; `.fig` import, best effort; animated GIF fills and TIFF images; last major: created, formats from the installed Figma's Info.plist and help center, ours from source; REST import keeps slot layers and instances' slot content (#792); REST import reads grid track sizes (#465); `.fig` import fidelity from the community batches, budgets for large files, the import report, a `.fig` copy from Save as, paste from another design app; instance layers' size and resizing and Hug on import (#731, #732)) · **Target:** Figma Design (desktop app 126.10.7)
 
 Every format Figma reads or writes, with FigCraft's support. Sources: `Info.plist` of
 `/Applications/Figma.app` (document types only; nothing inside the bundle's code was read), Figma's
@@ -27,6 +27,34 @@ and prototype interactions are still unchecked there.
 | Local library files | team libraries in the cloud | yes (enable a `.figcraft` as a library) | yes (publish) | per-asset versions, updates with overrides kept | see [collaboration-parity](collaboration-parity.md) |
 
 ## Import (place / paste / drop)
+
+External file drops are accepted over the editor Canvas, with distinct feedback for supported
+and unsupported files that clears on exit, cancellation or drop. SVG remains editable; raster
+files become ordinary image-filled layers. The receiving document, page and document coordinates
+are captured at drop time, including Zoom/Pan. Files in one gesture are placed side by side and
+successful imports are selected together; separate gestures keep their own origins. Imports use
+the existing undoable `file.import` and `.figcraft` image storage. Native documents still open in
+their own tabs; Dev Mode remains read-only.
+
+Native files with a usable filesystem path pass that path to the engine rather than copying the
+whole file into a UI byte buffer or base64 command parameter. They retain the engine's existing
+format and file limits, without the byte-input reservation imposing an additional roughly 85 MiB
+ceiling. Browser files and virtual files that require bytes use shared admission: at most 64
+pending imports and two fallback native read threads, with a 1 GiB aggregate reservation budget.
+The reservation charges twelve times the input size plus 64 KiB for overlapping raw, base64,
+command and retained pending/repeat data. Byte inputs also have a 512 MiB per-file ceiling;
+aggregate charging can refuse smaller files even when they are individually below that ceiling.
+Reservations stay with retained input and release when its last owner is dropped, including
+failure and cancellation. These limits cover import transport, not total process memory:
+format expansion, document images, undo state and renderer allocations have their own policies.
+
+Raster import checks encoded headers, nonzero dimensions and the decoder's advertised pixel size
+against its allocation limit before registering the original encoded image. It avoids a full
+pixel decode solely for validation; display uses the existing renderer's decoding and cache.
+A malformed header fails import, while damage detectable only in pixel data is reported when the
+renderer decodes it. This does not claim that every damaged pixel payload is rejected before a
+layer is inserted. Live platform qualification must use the rebuilt integration revision; smoke
+results from the original PR are historical evidence only. See [migration provenance](pr1435-migration.md).
 
 | Format | Figma | FigCraft | Notes | Hours |
 |---|---|---|---|---|
@@ -184,6 +212,7 @@ source paint coordinates.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-29 | minor | Canvas external file imports: scoped feedback/acceptance, Zoom/Pan placement, batch selection, native path imports and bounded browser/virtual byte inputs. Image-header and allocation checks avoid an additional full pixel decode for validation. Existing import/undo/save mechanisms and all historical rows retained; no parity estimate change. |
 | 2026-10-29 | minor | M8, #1080: SVG import draws a pattern's tile once per pattern and scale and reuses it for every other layer it fills (1,000 rectangles filled with one pattern: 1,000 tile drawings before, 1 now, same image fill), and the layers inside a tile count in the import's 100,000-layer budget instead of each tile starting a fresh one, so patterns nested in patterns stop at the budget. Tests: `tile_tests` (svg). Numbers unchanged |
 | 2026-10-29 | patch | M8: the progressive JPEG check from #1491 (a frame sampling a component more finely than its first, which the JPEG decoder asserts on, and in the browser a panic aborts the page) moved to `figcraft_format::jpeg` and now also guards the pictures files carry (`thumbnail::decode_thumbnail`: the home screen and recent files), so a crafted `.figcraft`, `.fig` or `.sketch` thumbnail or image file shows no picture instead of crashing. The canvas, exports and SVG/PDF keep it through the renderer. Regression tests in `jpeg_tests` (format) and `jpeg_sampling_tests` (render). Numbers unchanged |
 | 2026-10-29 | minor | Fonts: the missing-font row adds downloading a missing family the font store has (Google Fonts, Noto) from the Missing fonts window, after the user allows it (#754). Replacing a missing font with another is still missing. Numbers unchanged |

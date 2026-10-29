@@ -4,9 +4,12 @@ use figcraft_engine::Session;
 use figcraft_ui_egui::{ContentsFuture, FigApp, Services};
 use wasm_bindgen::JsCast as _;
 
+use crate::file_drag::{FileDrag, Phase};
+
 const CANVAS_ID: &str = "figcraft_canvas";
 const LOADING_ID: &str = "figcraft_loading";
 
+/// Starts the browser app, including file-drag listeners and the opt-in control channel.
 pub fn start() {
     eframe::WebLogger::init(log::LevelFilter::Info).ok();
     wasm_bindgen_futures::spawn_local(async {
@@ -28,9 +31,9 @@ pub fn start() {
         }
         let result = eframe::WebRunner::new()
             .start(
-                canvas,
+                canvas.clone(),
                 options,
-                Box::new(|cc| {
+                Box::new(move |cc| {
                     if let Some(rs) = &cc.wgpu_render_state {
                         log::info!("figcraft-web: wgpu backend {:?}", rs.adapter.get_info().backend);
                     }
@@ -47,6 +50,8 @@ pub fn start() {
                         let link = js_sys::decode_uri_component(link).ok().and_then(|s| s.as_string()).unwrap_or_else(|| link.to_string());
                         figcraft_ui_egui::live::open_invite(&mut fig, &link);
                     }
+                    let file_drag = FileDragBridge::new(canvas, cc.egui_ctx.clone())
+                        .map_err(|e| std::io::Error::other(format!("couldn't listen for browser file drags: {e:?}")))?;
                     // `?control`: `window.figcraft`, the page's control channel (crate::api), opt-in.
                     if crate::query::control(&query()) {
                         crate::api::connect(cc.egui_ctx.clone());
@@ -54,7 +59,7 @@ pub fn start() {
                             log::error!("couldn't install window.figcraft: {e:?}");
                         }
                     }
-                    Ok(Box::new(WebShell { fig }))
+                    Ok(Box::new(WebShell { fig, file_drag }))
                 }),
             )
             .await;
@@ -71,8 +76,10 @@ fn query() -> String {
     web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default()
 }
 
+/// Owns the editor and its drag listeners for the complete browser application lifetime.
 struct WebShell {
     fig: FigApp,
+    file_drag: FileDragBridge,
 }
 
 impl eframe::App for WebShell {
@@ -85,19 +92,77 @@ impl eframe::App for WebShell {
         figcraft_ui_egui::windows::guard(&mut self.fig, ctx, |fig| fig.background_tick(ctx));
     }
 
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+    /// Applies control input and drop coordinates before the editor consumes this frame.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         // Pointer and key events sent over the control channel (`ui.input`), for the frame about
         // to draw: the batch is applied by this frame and acknowledged once it is presented, as on
         // the desktop (`apps/figcraft/src/main.rs`). Without this hook the batch sat in its queue
         // and its promise never settled.
         let events = figcraft_ui_egui::windows::take_input(&mut self.fig, raw_input.viewport_id);
         raw_input.events.extend(events);
+        if self.file_drag.state.borrow_mut().apply(raw_input) {
+            ctx.request_repaint();
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.fig.control_queue.extend(crate::api::take_requests());
         self.fig.ui(ui);
         crate::api::poll_replies();
+    }
+}
+
+/// eframe already prevents file navigation and queues each browser file once. It doesn't supply
+/// drag coordinates, so keep only these pointer listeners, with the same lifetime as the app.
+struct FileDragBridge {
+    canvas: web_sys::HtmlCanvasElement,
+    state: std::rc::Rc<std::cell::RefCell<FileDrag>>,
+    listeners: Vec<(&'static str, wasm_bindgen::closure::Closure<dyn FnMut(web_sys::DragEvent)>)>,
+}
+
+impl FileDragBridge {
+    /// Registers pointer listeners without taking file reads away from eframe.
+    /// If registration fails, dropping the partial bridge removes earlier listeners.
+    fn new(canvas: web_sys::HtmlCanvasElement, ctx: egui::Context) -> Result<Self, wasm_bindgen::JsValue> {
+        let mut bridge = Self { canvas, state: Default::default(), listeners: Vec::new() };
+        for (name, phase) in
+            [("dragenter", Phase::Enter), ("dragover", Phase::Over), ("dragleave", Phase::Leave), ("drop", Phase::Drop), ("dragend", Phase::Cancel)]
+        {
+            let (canvas, state, ctx) = (bridge.canvas.clone(), bridge.state.clone(), ctx.clone());
+            let listener = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::DragEvent)>::new(move |event: web_sys::DragEvent| {
+                let files = event.data_transfer().is_some_and(|transfer| {
+                    transfer.types().iter().any(|kind| kind.as_string().is_some_and(|kind| kind.eq_ignore_ascii_case("Files")))
+                        || transfer.files().is_some_and(|files| files.length() > 0)
+                        || (0..transfer.items().length()).any(|i| transfer.items().get(i).is_some_and(|item| item.kind() == "file"))
+                });
+                let rect = canvas.get_bounding_client_rect();
+                let pos = crate::file_drag::position(
+                    [f64::from(event.client_x()), f64::from(event.client_y())],
+                    [rect.left(), rect.top()],
+                    ctx.zoom_factor(),
+                );
+                let related_inside = event
+                    .related_target()
+                    .and_then(|target| target.dyn_into::<web_sys::Node>().ok())
+                    .is_some_and(|node| canvas.contains(Some(&node)));
+                if state.borrow_mut().record(phase, files, pos, related_inside) {
+                    ctx.request_repaint();
+                }
+                // Do not read files, prevent defaults or stop propagation here: eframe owns them.
+            });
+            bridge.canvas.add_event_listener_with_callback(name, listener.as_ref().unchecked_ref())?;
+            bridge.listeners.push((name, listener));
+        }
+        Ok(bridge)
+    }
+}
+
+impl Drop for FileDragBridge {
+    /// Unregisters callbacks before their Rust closures are freed, including partial setup failure.
+    fn drop(&mut self) {
+        for (name, listener) in &self.listeners {
+            let _ = self.canvas.remove_event_listener_with_callback(name, listener.as_ref().unchecked_ref());
+        }
     }
 }
 

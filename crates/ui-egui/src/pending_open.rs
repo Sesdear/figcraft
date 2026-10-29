@@ -18,18 +18,28 @@ use crate::{FigApp, ReadFuture, RepaintWaker};
 pub struct PendingOpen {
     /// What the card shows for it (the file name).
     pub label: String,
+    /// Engine parameters; encoded file data stays charged to `resources` until execution ends.
     pub params: Value,
+    /// Engine entry point used once the pending read and receiving editor are ready.
     pub command: &'static str,
     /// Canvas imports stay with the document and page that received the drop.
     pub target: Option<ImportTarget>,
     /// The file's contents still on their way; they go into `params` as `data` once read.
     pub read: Option<ReadFuture>,
+    /// Owns admission and input memory through decoding; edit.repeat may retain it afterwards.
+    pub(crate) resources: Option<crate::import_limits::ImportLease>,
 }
 
+/// Destination captured at drop time so asynchronous imports survive tab or page switches.
 pub struct ImportTarget {
+    /// Stable document identity, independent of its current tab index.
     pub uid: u64,
+    /// Page that received the drop; imports are cancelled if it no longer exists.
     pub page: NodeId,
+    /// Destination name displayed while the import is pending.
     pub name: String,
+    /// One OS drop. Pending reads from later gestures must not share its layout or selection.
+    pub batch: u64,
 }
 
 /// Queues dropped file `f` to open as a document of its own: by path, or by its contents when there
@@ -37,12 +47,22 @@ pub struct ImportTarget {
 pub(crate) fn open_dropped(app: &mut FigApp, f: &egui::DroppedFileHandle) {
     let path = f.path();
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let (params, read) =
-        if path.exists() { (json!({"path": path.to_string_lossy()}), None) } else { (json!({"name": name}), Some(crate::dropped_bytes(f, &name))) };
-    app.ui.pending_opens.push(PendingOpen { label: name, params, command: "file.open", target: None, read });
+    let queued = crate::open::dropped_source(f, &name);
+    match queued {
+        Ok((params, read, lease)) => {
+            app.ui.pending_opens.push(PendingOpen { label: name, params, command: "file.open", target: None, read, resources: Some(lease) })
+        }
+        Err(error) => app.show_error(error),
+    }
 }
 
+/// Imports into the captured destination, restoring the active tab and any temporarily changed page.
+/// When visiting another page, preserve the selection that was on the destination's prior page.
+/// A closed document or removed page cancels the import rather than redirecting it.
+/// Keep the input reservation through command execution; a successful import transfers it to
+/// the repeat-command owner because its encoded parameters remain available for edit.repeat.
 fn run_pending(app: &mut FigApp, pending: PendingOpen) -> Option<Value> {
+    let resources = pending.resources;
     let target = match pending.target {
         Some(target) => target,
         None if pending.command != "file.import" => return app.run_user(pending.command, pending.params),
@@ -66,6 +86,9 @@ fn run_pending(app: &mut FigApp, pending: PendingOpen) -> Option<Value> {
     app.session.active = index;
     app.session.docs[index].page = target.page;
     let result = app.run_user(pending.command, pending.params);
+    if result.is_some() && pending.command == "file.import" {
+        app.repeat_import_memory = resources;
+    }
     if previous_page != target.page
         && let Some(doc) = app.session.docs.iter_mut().find(|doc| doc.uid == target.uid)
         && doc.doc.pages.contains(&previous_page)
@@ -93,7 +116,9 @@ const IMPORT_GAP: f64 = 20.0;
 const FRAMES_BEFORE_OPENING: u8 = 2;
 
 /// Polls the contents still being read: those that arrived go into their file's parameters, files
-/// that couldn't be read are dropped with a message. Whether any are still on their way.
+/// that couldn't be read are dropped with a message. Returns whether any are still on their way.
+/// Successful results keep their lease while base64 parameters wait for slower files; failed
+/// results release theirs when removed from the pending list.
 fn read_contents(app: &mut FigApp, ctx: &egui::Context) -> bool {
     let waker = Waker::from(Arc::new(RepaintWaker(ctx.clone())));
     let mut cx = TaskContext::from_waker(&waker);
@@ -108,7 +133,7 @@ fn read_contents(app: &mut FigApp, ctx: &egui::Context) -> bool {
             }
             Poll::Ready(Ok(bytes)) => {
                 use base64::Engine as _;
-                pending.params["data"] = json!(base64::engine::general_purpose::STANDARD.encode(&bytes));
+                pending.params["data"] = Value::String(base64::engine::general_purpose::STANDARD.encode(&bytes));
                 pending.read = None;
                 true
             }
@@ -133,14 +158,24 @@ pub fn pending_opens(app: &mut FigApp, ctx: &egui::Context) {
         return;
     }
     ctx.request_repaint();
-    if app.ui.pending_open_frames >= FRAMES_BEFORE_OPENING && !reading {
+    // A live move/resize previews from its original snapshot. Importing into it would lose
+    // both the new layers and their undo entry on the next preview/cancel. Wait, don't end it.
+    let interacting = app
+        .ui
+        .pending_opens
+        .iter()
+        .filter_map(|p| p.target.as_ref())
+        .any(|target| app.session.docs.iter().any(|doc| doc.uid == target.uid && doc.interaction.is_some()));
+    if app.ui.pending_open_frames >= FRAMES_BEFORE_OPENING && !reading && !interacting {
         app.ui.pending_open_frames = 0;
-        // Files dropped together land side by side: each starts where the previous one ends.
-        let mut next_x: Option<f64> = None;
+        // Keep each gesture separate even when several asynchronous drops wait together.
+        let mut batches = std::collections::BTreeMap::<_, (Option<f64>, Vec<NodeId>)>::new();
         for mut pending in std::mem::take(&mut app.ui.pending_opens) {
             let command = pending.command;
             let canvas = command == "file.import" && pending.params.get("x").is_some();
-            if canvas && let Some(x) = next_x {
+            let batch = pending.target.as_ref().filter(|_| canvas).map(|t| (t.uid, t.page, t.batch));
+            let next_x = batch.and_then(|key| batches.get(&key).and_then(|b| b.0));
+            if let Some(x) = next_x {
                 pending.params["x"] = json!(x);
             }
             let page = pending.target.as_ref().map(|t| (t.uid, t.page));
@@ -148,12 +183,34 @@ pub fn pending_opens(app: &mut FigApp, ctx: &egui::Context) {
             if result.is_some() && command == "file.open" {
                 app.ui.home = false;
             }
-            if canvas {
-                let right = result.as_ref().and_then(|r| r.get("id")?.as_u64()).and_then(|id| {
+            if let Some(batch) = batch {
+                let id = result.as_ref().and_then(|r| r.get("id")?.as_u64()).map(NodeId);
+                let right = id.and_then(|id| {
                     let doc = &app.session.docs.iter().find(|d| Some(d.uid) == page.map(|p| p.0))?.doc;
-                    doc.world_bounds(NodeId(id)).map(|b| b.x1)
+                    doc.world_bounds(id).map(|b| b.x1)
                 });
-                next_x = right.map(|r| r + IMPORT_GAP).or(next_x);
+                let state = batches.entry(batch).or_default();
+                state.0 = right.filter(|r| r.is_finite()).map(|r| r + IMPORT_GAP).or(state.0);
+                if let Some(id) = id {
+                    state.1.push(id);
+                }
+            }
+        }
+        // Selection is a normal, non-undoable engine command. Never switch the user's page/tab
+        // back if they navigated while the data was being read.
+        for ((uid, page, batch), (_, ids)) in batches {
+            if !ids.is_empty() && app.session.docs.iter().any(|d| d.uid == uid && d.page == page) {
+                run_pending(
+                    app,
+                    PendingOpen {
+                        label: String::new(),
+                        params: json!({"ids": ids}),
+                        command: "select.set",
+                        target: Some(ImportTarget { uid, page, name: String::new(), batch }),
+                        read: None,
+                        resources: None,
+                    },
+                );
             }
         }
         return;

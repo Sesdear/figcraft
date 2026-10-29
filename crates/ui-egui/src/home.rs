@@ -180,7 +180,11 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
 /// editor then shows it), behind an "Opening as a new file" card ([`crate::pending_open`]); anything
 /// else is turned away with a toast. A file that fails to open keeps the engine's own error.
 fn dropped(app: &mut FigApp, ctx: &egui::Context) {
-    let files = ctx.input(|i| i.raw.dropped_files.clone());
+    if ctx.current_pass_index() != 0 {
+        return;
+    }
+    let mut files = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
+    crate::open::limit_drop(app, &mut files);
     for f in files {
         if !crate::opens(f.path()) {
             app.toast(tr("Drop a .figcraft, .fig, .sketch, .json, .svg or image file."));
